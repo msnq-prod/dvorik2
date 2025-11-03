@@ -16,7 +16,9 @@ from core.exception_handlers import (
 from core.middleware import (
     RequestLoggingMiddleware,
     TestDataMiddleware,
-    WebhookAuthMiddleware
+    WebhookAuthMiddleware,
+    RateLimitMiddleware,
+    SecurityHeadersMiddleware
 )
 
 # Import all routers
@@ -65,6 +67,8 @@ app.add_middleware(
 )
 
 # Add custom middleware
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RateLimitMiddleware, calls=100, period=60)
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(TestDataMiddleware)
 app.add_middleware(WebhookAuthMiddleware)
@@ -97,14 +101,25 @@ async def startup_event():
     """Run on application startup."""
     logger.info("Starting Мармеладный Дворик API")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
-    logger.info(f"Database: {settings.DATABASE_HOST}")
-    logger.info(f"Redis: {settings.REDIS_HOST}")
+    logger.info(f"Debug mode: {settings.DEBUG}")
+    logger.info(f"Database URL: {settings.DB_URL.split('@')[1] if '@' in settings.DB_URL else 'configured'}")
+    logger.info(f"Redis URL: {settings.REDIS_URL}")
+    
+    # Initialize Redis client
+    from core.redis import redis_client
+    await redis_client.connect()
+    logger.info("Redis client connected")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Run on application shutdown."""
     logger.info("Shutting down Мармеладный Дворик API")
+    
+    # Close Redis client
+    from core.redis import redis_client
+    await redis_client.disconnect()
+    logger.info("Redis client disconnected")
     
     # Close Telegram bot clients
     from services.telegram_client import close_clients
@@ -122,10 +137,39 @@ async def root():
 
 
 @app.get("/health", tags=["Health"])
-async def health_check():
-    """Health check endpoint."""
-    return {
+async def health_check(db: AsyncSession = Depends(get_db)):
+    """Health check endpoint with database and Redis checks."""
+    from sqlalchemy import text
+    from core.redis import get_redis
+    
+    health = {
         "status": "healthy",
-        "environment": settings.ENVIRONMENT
+        "environment": settings.ENVIRONMENT,
+        "checks": {}
     }
+    
+    # Check database
+    try:
+        await db.execute(text("SELECT 1"))
+        health["checks"]["database"] = "ok"
+    except Exception as e:
+        health["status"] = "unhealthy"
+        health["checks"]["database"] = f"error: {str(e)}"
+        logger.error(f"Health check: Database error - {str(e)}")
+    
+    # Check Redis
+    try:
+        redis = await get_redis()
+        if redis.client:
+            await redis.client.ping()
+            health["checks"]["redis"] = "ok"
+        else:
+            health["status"] = "unhealthy"
+            health["checks"]["redis"] = "error: not connected"
+    except Exception as e:
+        health["status"] = "unhealthy"
+        health["checks"]["redis"] = f"error: {str(e)}"
+        logger.error(f"Health check: Redis error - {str(e)}")
+    
+    return health
 

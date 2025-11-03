@@ -354,7 +354,7 @@ def get_main_bot_client() -> TelegramClient:
     
     if main_bot_client is None:
         main_bot_client = TelegramClient(
-            token=settings.TELEGRAM_BOT_TOKEN,
+            token=settings.TELEGRAM_MAIN_BOT_TOKEN,
             is_main_bot=True
         )
     

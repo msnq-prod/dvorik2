@@ -3,9 +3,10 @@ import time
 import uuid
 import logging
 from typing import Callable
+from collections import defaultdict
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import Response, JSONResponse
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,145 @@ class WebhookAuthMiddleware(BaseHTTPMiddleware):
         
         # Process request
         response = await call_next(request)
+        
+        return response
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware for rate limiting API requests.
+    
+    Limits requests per IP address to prevent abuse and DDoS attacks.
+    """
+    
+    def __init__(
+        self,
+        app,
+        calls: int = 100,
+        period: int = 60,
+        exclude_paths: list[str] = None
+    ):
+        """
+        Initialize rate limiter.
+        
+        Args:
+            app: FastAPI application
+            calls: Maximum number of calls per period
+            period: Time period in seconds
+            exclude_paths: List of paths to exclude from rate limiting
+        """
+        super().__init__(app)
+        self.calls = calls
+        self.period = period
+        self.exclude_paths = exclude_paths or ["/health", "/api/docs", "/api/redoc", "/api/openapi.json"]
+        self.clients: dict[str, list[float]] = defaultdict(list)
+    
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable
+    ) -> Response:
+        """
+        Check rate limit and process request.
+        
+        Args:
+            request: Request object
+            call_next: Next middleware or endpoint
+        
+        Returns:
+            Response or 429 error
+        """
+        # Skip rate limiting for excluded paths
+        if any(request.url.path.startswith(path) for path in self.exclude_paths):
+            return await call_next(request)
+        
+        # Get client IP
+        client = request.client.host if request.client else "unknown"
+        now = time.time()
+        
+        # Clean old requests
+        self.clients[client] = [
+            req_time for req_time in self.clients[client]
+            if now - req_time < self.period
+        ]
+        
+        # Check rate limit
+        if len(self.clients[client]) >= self.calls:
+            logger.warning(
+                f"Rate limit exceeded for {client}",
+                extra={
+                    "client": client,
+                    "path": request.url.path,
+                    "calls": len(self.clients[client]),
+                    "limit": self.calls
+                }
+            )
+            
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error_code": "RATE_LIMIT_EXCEEDED",
+                    "message": f"Rate limit exceeded. Maximum {self.calls} requests per {self.period} seconds."
+                },
+                headers={
+                    "Retry-After": str(self.period)
+                }
+            )
+        
+        # Add current request
+        self.clients[client].append(now)
+        
+        # Process request
+        response = await call_next(request)
+        
+        # Add rate limit headers
+        response.headers["X-RateLimit-Limit"] = str(self.calls)
+        response.headers["X-RateLimit-Remaining"] = str(self.calls - len(self.clients[client]))
+        response.headers["X-RateLimit-Reset"] = str(int(now + self.period))
+        
+        return response
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware for adding security headers to all responses.
+    
+    Implements common security headers to protect against:
+    - XSS attacks
+    - Clickjacking
+    - MIME type sniffing
+    - etc.
+    """
+    
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable
+    ) -> Response:
+        """
+        Add security headers to response.
+        
+        Args:
+            request: Request object
+            call_next: Next middleware or endpoint
+        
+        Returns:
+            Response with security headers
+        """
+        response = await call_next(request)
+        
+        # Security headers
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        
+        # Only add HSTS if using HTTPS
+        if request.url.scheme == "https":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        
+        # Content Security Policy (basic)
+        response.headers["Content-Security-Policy"] = "default-src 'self'"
         
         return response
 

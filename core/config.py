@@ -57,9 +57,14 @@ class Settings(BaseSettings):
     TZ: str = Field(default="Asia/Vladivostok")
     
     # Application Settings
+    ENVIRONMENT: str = Field(default="development")
     DEBUG: bool = Field(default=False)
     API_HOST: str = Field(default="0.0.0.0")
     API_PORT: int = Field(default=8000, ge=1, le=65535)
+    CORS_ORIGINS: list[str] = Field(
+        default=["http://localhost:3000", "http://localhost:8000"],
+        description="Allowed CORS origins (comma-separated in .env)"
+    )
     
     # Webhook URLs
     WEBHOOK_BASE_URL: str = Field(
@@ -92,6 +97,17 @@ class Settings(BaseSettings):
     
     # Logging
     LOG_LEVEL: str = Field(default="INFO")
+    
+    @field_validator('CORS_ORIGINS', mode='before')
+    @classmethod
+    def parse_cors_origins(cls, v) -> list[str]:
+        """Parse CORS origins from string or list."""
+        if isinstance(v, str):
+            # Split by comma and strip whitespace
+            return [origin.strip() for origin in v.split(',') if origin.strip()]
+        elif isinstance(v, list):
+            return v
+        return ["http://localhost:3000", "http://localhost:8000"]
     
     @field_validator('CELERY_BROKER_URL', mode='before')
     @classmethod
