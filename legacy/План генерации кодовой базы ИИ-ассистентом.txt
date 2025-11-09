@@ -1,0 +1,364 @@
+
+Перед каждым промптом устанавливайте этот контекст:
+"Ты — Senior Python-разработчик. Мы создаем проект 'Мармеладный дворик' по ТЗ. Ты обязан следовать моим инструкциям по структуре файлов, импортам и NFR. Используй Python 3.11, FastAPI 0.100+, Pydantic v2, SQLAlchemy 2.0, aiogram 3, Celery 5. Пиши код с полными аннотациями типов." 
+
+
+Фаза 0: Инициализация проекта и инфраструктуры
+
+
+   1. Промпт 0.1 (Структура): "Создай следующую структуру каталогов (и пустые __init__.py в каждом подкаталоге app), как в , 2.4:
+app/
+   __init__.py
+   core/
+       __init__.py
+   models/
+       __init__.py
+   routers/
+       __init__.py
+   schemas/
+       __init__.py
+   services/
+       __init__.py
+   tasks/
+       __init__.py
+alembic/
+   versions/
+frontend/
+```"
+
+   2. Промпт 0.2 (docker-compose): "Создай docker-compose.yml. Он должен содержать 5 сервисов, как в , 2.1: api (FastAPI), worker (Celery), beat (Celery Beat), mysql (MySQL 8), redis (Redis).
+      * api должен зависеть от mysql и redis.
+      * worker и beat должны зависеть от api.
+      * api, worker, beat должны использовать TZ=Asia/Vladivostok.
+      * mysql должен использовать TZ=Asia/Vladivostok и хранить данные в volume mysql_data.
+      * api должен билдиться из . и запускаться командой uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload.
+      * worker должен запускаться celery -A app.celery_app.celery_app worker --loglevel=info.
+      * beat должен запускаться celery -A app.celery_app.celery_app beat --loglevel=info."
+      3. Промпт 0.3 (.env): "Создай .env.example на основе , 2.3. Включи все переменные:
+APP_ENV=dev
+TZ=Asia/Vladivostok
+DB_URL=mysql+pymysql://user:pass@mysql:3306/marmelad
+REDIS_URL=redis://redis:6379/0
+TELEGRAM_MAIN_BOT_TOKEN=123:abc
+TELEGRAM_AUTH_BOT_TOKEN=123:abc
+TELEGRAM_WEBHOOK_MAIN_URL=https://.../bot/main/webhook
+TELEGRAM_WEBHOOK_AUTH_URL=https://.../bot/auth/webhook
+FIRST_SUPERADMIN_TG_ID=123456789
+DEFAULT_BROADCAST_RATE_PER_MINUTE=25
+DEFAULT_BROADCAST_BATCH_SIZE=30
+```"
+
+      4. Промпт 0.4 (Config): "Создай app/config.py. Используй pydantic-settings.BaseSettings. Создай класс Settings, который читает все переменные из .env.example (Промпт 0.3). Создай один экземпляр settings = Settings()."
+      5. Промпт 0.5 (Database): "Создай app/db.py.
+         * Импортируй settings из app.config.
+         * Импортируй create_engine, sessionmaker и DeclarativeBase из sqlalchemy.orm.
+         * Создай engine, используя settings.DB_URL.
+         * Создай SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine).
+         * Критично: Создай class Base(DeclarativeBase): pass..12
+         * Создай def get_db():... (dependency injection для FastAPI)."
+         6. Промпт 0.6 (Main App): "Создай app/main.py.
+         * Создай экземпляр app = FastAPI().
+         * Добавь обработчик @app.on_event('startup') (пока пустой).
+         * Добавь GET /health эндпоинт, который возвращает {'status': 'ok'}."
+         7. Промпт 0.7 (Alembic Init):
+         * (Действие оператора): Выполни pip install alembic pymysql
+         * (Действие оператора): Выполни alembic init alembic
+         * Промпт: "Отлично. Теперь отредактируй alembic.ini. Найди строку sqlalchemy.url и замени ее на sqlalchemy.url = ${DB_URL} (чтобы читать из env)."
+         8. Промпт 0.8 (Alembic Env): "Теперь ключевой шаг. Отредактируй alembic/env.py.
+         * Найди target_metadata = None.
+         * Импортируй Base из app.db.
+         * Критично: Импортируй все будущие модели (просто напиши импорты, даже если файлов еще нет):
+         * from app.models.users import User
+         * from app.models.admins import Admin
+         * from app.models.cashiers import Cashier
+         * from app.models.discount_templates import DiscountTemplate
+         * from app.models.discounts import Discount
+         * from app.models.discount_usage_logs import DiscountUsageLog
+         * from app.models.broadcasts import Broadcast, BroadcastLog
+         * from app.models.common import Segment, Campaign, CampaignUser, Setting
+         * from app.models.logs_and_orders import Order, AuditLog
+         * Установи target_metadata = Base.metadata..12"
+
+
+Фаза 1: Модели данных и Схемы
+
+
+Примечание: Выполняй эти промпты по одному. Каждый промпт должен содержать "Импортируй Base из app.db".
+         1. Промпт 1.1 (Модель Users): "Создай app/models/users.py. Импортируй Base из app.db и типы SQLAlchemy (включая JSON, ENUM, DATE, DATETIME, TINYINT). Создай модель User(Base) с __tablename__ = 'users'. Используй точно поля и типы из , 3.2 (включая telegram_id (UNIQUE, NOT NULL), gender (ENUM), birthday (DATE, NULL), is_subscribed (TINYINT), tags (JSON), is_test, created_at, updated_at)."
+         2. Промпт 1.2 (Модель Admins): "Создай app/models/admins.py. Импортируй Base. Создай модель Admin(Base) по , 3.3 (telegram_id (UNIQUE), role (ENUM('owner','marketing','readonly')), can_broadcast_from_chat, notification_groups (JSON))."
+         3. Промпт 1.3 (Модель Cashiers): "Создай app/models/cashiers.py. Импортируй Base. Создай модель Cashier(Base) по , 3.4 (telegram_id (UNIQUE), is_active, approved_by_admin_id)."
+         4. Промпт 1.4 (Модель DiscountTemplates): "Создай app/models/discount_templates.py. Импортируй Base. Создай модель DiscountTemplate(Base) по , 3.5 (value (DECIMAL(10,2)), value_type (ENUM), recurrence (JSON), event (ENUM), usage_type (ENUM))."
+         5. Промпт 1.5 (Модель Discounts): "Создай app/models/discounts.py. Импортируй Base, ForeignKey. Создай модель Discount(Base) по , 3.6 (user_id (FK to 'users.id'), template_id (FK to 'discount_templates.id'), code (UNIQUE), expires_at, used_at (DATETIME, NULL))."
+         6. Промпт 1.6 (Модель DiscountUsageLogs): "Создай app/models/discount_usage_logs.py. Импортируй Base. Создай модель DiscountUsageLog(Base) по , 3.7 (discount_id (NULL), code, cashier_id (NULL), user_id (NULL), status (ENUM('success','already_used','not_found','expired','cashier_not_active')))."
+         7. Промпт 1.7 (Модели Broadcasts): "Создай app/models/broadcasts.py. Импортируй Base, ForeignKey. Создай 2 модели:
+         * Broadcast(Base) по , 3.8 (media_type (ENUM), status (ENUM('draft','scheduled','sending','sent','error','canceled'))).
+         * BroadcastLog(Base) по , 3.9 (broadcast_id (FK), user_id (FK), status (ENUM), error_message (TEXT, NULL), error_payload (JSON, NULL) )."
+         8. Промпт 1.8 (Прочие модели): "Создай app/models/common.py. Импортируй Base, ForeignKey. Создай 4 модели:
+         * Segment(Base) по , 3.10.
+         * Campaign(Base) по , 3.11.
+         * CampaignUser(Base) по , 3.11 (campaign_id (FK), user_id (FK)).
+         * Setting(Base) по , 3.12 (key (UNIQUE))."
+         9. Промпт 1.9 (Модели Заказов и Аудита): "Создай app/models/logs_and_orders.py. Импортируй Base, ForeignKey. Создай 2 модели:
+         * Order(Base) по , 3.13 (user_id (FK)).
+         * AuditLog(Base) по , 3.14 (admin_id (FK))."
+         10. Промпт 1.10 (Схемы Pydantic): "Теперь создай схемы Pydantic v2. Создай app/schemas/users.py.
+         * Импортируй BaseModel из pydantic, datetime.
+         * Создай UserBase(BaseModel), UserCreate(UserBase).
+         * Создай UserSchema(UserBase). Он обязан содержать id и created_at.
+         * Критически важно: В UserSchema добавь class Config: from_attributes = True.".16
+         * Повтори этот промпт для каждой модели, создавая app/schemas/discounts.py, app/schemas/broadcasts.py и т.д., добавляя ...Create, ...Update, ...Schema по мере необходимости.
+         11. Промпт 1.15 (Создание миграции):
+         * (Действие оператора): Убедись, что mysql и redis запущены (docker compose up -d mysql redis).
+         * (Действие оператора): Выполни export $(cat.env | xargs) (чтобы загрузить DB_URL в env).
+         * (Действие оператора): Выполни docker compose run --rm api alembic revision --autogenerate -m "Initial_data_model".
+         * Проверь сгенерированный файл миграции. Он должен содержать op.create_table для всех 14+ таблиц. Если он пуст, вернись к Промпту 0.8.
+         12. Промпт 1.16 (Применение миграции):
+         * (Действие оператора): Выполни docker compose run --rm api alembic upgrade head.
+         * Проверь БД: таблицы созданы.
+
+
+Фаза 2: Базовые сервисы (Логика домена)
+
+
+         1. Промпт 2.1 (Telegram Service): "Создай app/services/telegram_service.py.
+         * Импортируй aiogram.Bot и aiogram.exceptions. Импортируй settings из app.config.
+         * Создай bot_main = Bot(token=settings.TELEGRAM_MAIN_BOT_TOKEN, parse_mode='HTML').
+         * Создай bot_auth = Bot(token=settings.TELEGRAM_AUTH_BOT_TOKEN, parse_mode='HTML').
+         * Создай класс TelegramService с @staticmethod методами :
+         * async def send_message(bot: Bot, chat_id: int, text: str, reply_markup=None) (с try-except на TelegramApiException).
+         * async def get_chat_member(bot: Bot, chat_id: int | str, user_id: int) (с try-except).
+         * async def set_main_webhook() (вызывает bot_main.set_webhook(url=settings.TELEGRAM_WEBHOOK_MAIN_URL)).
+         * async def set_auth_webhook()."
+         2. Промпт 2.2 (Subscription Service): "Создай app/services/subscription_service.py.
+         * Импортируй Redis (из redis.asyncio), settings, TelegramService, Session, User, bot_main.
+         * Создай redis_client = Redis.from_url(settings.REDIS_URL, decode_responses=True).
+         * Создай класс SubscriptionService.
+         * Реализуй async def check_subscription(self, db: Session, user: User, channel_id: str) -> bool.
+         * Логика : 1. Ключ кэша sub:{channel_id}:{user.id}. 2. cached = await redis_client.get(cache_key). 3. Если cached == 'member', верни True. 4. Вызови TelegramService.get_chat_member(bot_main, channel_id, user.telegram_id). 5. Если статус member|administrator|creator: await redis_client.set(cache_key, 'member', ex=60); user.is_subscribed = True; верни True. 6. Иначе: await redis_client.set(cache_key, 'not_member', ex=60); user.is_subscribed = False; верни False. 7. Сохрани user.subscription_checked_at."
+         3. Промпт 2.3 (Discount Service - Генератор Кода): "Создай app/services/discount_service.py.
+         * Импортируй random, string, Session, Discount.
+         * Реализуй def _generate_discount_code() -> str.
+         * Логика точно по , 3.15: Алфавит АБВГДЕЖЗИКЛМНОПРСТУФХЦЧШЩЭЮЯ. 3 случайные буквы + 4 случайные цифры (e.g., ДЯА4589).
+         * Реализуй async def is_code_unique(db: Session, code: str) -> bool (проверка по discounts.code).
+         * Реализуй async def create_unique_discount_code(db: Session) -> str (цикл while с 5 попытками, который вызывает _generate_discount_code и is_code_unique)."
+         4. Промпт 2.4 (Discount Service - Выдача скидок): "В том же app/services/discount_service.py создай класс DiscountService.
+         * Импортируй User, DiscountTemplate, Discount.
+         * Реализуй async def give_discount_from_template(self, db: Session, user: User, template_event: str) -> Discount | None.
+         * Логика : 1. Найди DiscountTemplate по event=template_event и is_active=1. 2. Вызови _can_issue_from_template (приватный метод).
+         * Реализуй async def _can_issue_from_template(self, db: Session, user: User, template: DiscountTemplate) -> bool. Логика :
+         * Проверь template.recurrence.
+         * Если recurrence={"type": "days", "value": 30} (или monthly), найди последнюю скидку по user_id и template_id.
+         * Если created_at < 30 дней назад, верни False. Иначе True.
+         * Вернись к give_discount_from_template. Если _can_issue, то: 1. code = await create_unique_discount_code(db). 2. expires_at = datetime.utcnow() + timedelta(days=template.duration_days). 3. new_discount = Discount(user_id=user.id, template_id=template.id, code=code, expires_at=expires_at, is_test=user.is_test). 4. db.add(new_discount), db.commit(). 5. Верни new_discount."
+
+
+Фаза 3: Воркеры и фоновые задачи
+
+
+         1. Промпт 3.1 (Celery App): "Создай app/celery_app.py..10
+         * Импортируй Celery и settings из app.config.
+         * Создай celery_app = Celery('worker', broker=settings.REDIS_URL, backend=settings.REDIS_URL).
+         * Укажи celery_app.conf.include = ['app.tasks.broadcasts', 'app.tasks.birthday', 'app.tasks.reminders'].
+         * Установи celery_app.conf.timezone = settings.TZ (Asia/Vladivostok)."
+         2. Промпт 3.2 (Celery Beat): "В app/celery_app.py добавь celery_app.conf.beat_schedule.
+         * Импортируй crontab.
+         * Добавь задачу 'send-birthday-congrats' , которая запускается crontab(hour=9, minute=0) (час пока захардкодим, потом возьмем из settings).
+         * Задача должна вызывать таск app.tasks.birthday.send_birthday_congrats."
+         3. Промпт 3.3 (Задача ДР): "Создай app/tasks/birthday.py.
+         * Импортируй celery_app из app.celery_app, SessionLocal из app.db, DiscountService, TelegramService, bot_main, User, func из sqlalchemy.
+         * Создай таск @celery_app.task(name='tasks.send_birthday_congrats').
+         * Логика : 1. db = SessionLocal(). 2. today = datetime.now(tz=pytz.timezone(settings.TZ)). 3. Найди всех User, у кого func.day(User.birthday) == today.day и func.month(User.birthday) == today.month. 4. discount_service = DiscountService(). 5. Для каждого юзера: await discount_service.give_discount_from_template(db, user, event='birthday') и await TelegramService.send_message(bot_main, user.telegram_id, 'С Днем Рождения!'). 6. db.close()."
+         4. Промпт 3.4 (Задача Рассылок): "Создай app/tasks/broadcasts.py.
+         * Импортируй celery_app, SessionLocal, TelegramService, Broadcast, BroadcastLog, User, settings, asyncio, bot_main.
+         * Создай таск @celery_app.task(name='tasks.send_broadcast', bind=True, max_retries=3).
+         * Логика : 1. Прими self, broadcast_id. 2. db = SessionLocal(). 3. broadcast = db.query(Broadcast).get(broadcast_id). 4. broadcast.status = 'sending'. 5. Собери список user_ids (пока простой db.query(User.telegram_id).filter(User.is_test == broadcast.is_test).
+         *          6. delay = 60.0 / settings.DEFAULT_BROADCAST_RATE_PER_MINUTE. 7. Итерируй по user_ids: 8. try...except await TelegramService.send_message(bot_main, user_id, broadcast.body). 9. При успехе: db.add(BroadcastLog(status='success',...)). 10. При TelegramForbiddenError: db.add(BroadcastLog(status='failed', error_message='blocked')). 11. При TelegramRetryAfter (429): self.retry(exc=e, countdown=e.retry_after). 12. В конце: broadcast.status = 'sent'. 13. db.commit(), db.close()."
+         5. Промпт 3.5 (Задача Напоминаний): "Создай app/tasks/reminders.py.
+         * Импортируй celery_app, SessionLocal, TelegramService, bot_main, Discount.
+         * Создай таск @celery_app.task(name='tasks.send_discount_reminder').
+         * Логика : 1. Прими discount_id. 2. db = SessionLocal(). 3. Найди discount. 4. Проверь, что discount.used_at IS NULL и discount.expires_at > NOW(). 5. Если да: await TelegramService.send_message(bot_main,... 'Ваша скидка скоро сгорит...'). 6. db.close()."
+
+
+Фаза 4: API-эндпоинты и логика ботов
+
+
+         1. Промпт 4.1 (Безопасность): "Создай app/core/security.py.
+         * Импортируй JWTError, jwt, datetime, Depends, HTTPException, status, OAuth2PasswordBearer.
+         * Импортируй Admin, Session, get_db.
+         * Создай oauth2_scheme = OAuth2PasswordBearer(tokenUrl='/api/v1/auth/login-token').
+         * Реализуй create_access_token(...) (JWT).
+         * Реализуй async def get_current_admin(token: Annotated, db: Session = Depends(get_db)) -> Admin. (Проверяет JWT, находит Admin в БД. Если is_active=0 -> 403).
+         * Критично: Реализуй def get_admin_with_role(role: str) -> Callable:
+         * Это dependency , которая def _check_role(admin: Admin = Depends(get_current_admin)).
+         * Она проверяет, что admin.role == role или admin.role == 'owner'.
+         * Если роль не совпадает, кидай HTTPException(403)..8"
+         2. Промпт 4.2 (API Auth): "Создай app/routers/auth.py.
+         * Создай router = APIRouter(prefix='/api/v1/auth', tags=['Auth']).
+         * Реализуй POST /login-token :
+         * (Логику одноразового токена пока мокни). Принимает body: dict.
+         * Находит админа (пока FIRST_SUPERADMIN_TG_ID).
+         * Возвращает { 'access_token': create_access_token(...), 'token_type': 'bearer', 'admin':... (AdminSchema) }."
+         3. Промпт 4.3 (Startup Logic): "Отредактируй app/main.py -> @app.on_event('startup').
+         * Импортируй TelegramService, settings, SessionLocal, Admin, FIRST_SUPERADMIN_TG_ID.
+         * Логика :
+         * Если settings.APP_ENV == 'prod': await TelegramService.set_main_webhook(), await TelegramService.set_auth_webhook().
+         * db = SessionLocal().
+         * Найди Admin по telegram_id == settings.FIRST_SUPERADMIN_TG_ID.
+         * Если нет: создай Admin(telegram_id=..., role='owner', is_active=1).
+         * db.commit(), db.close()."
+         4. Промпт 4.4 (Aiogram Setup): "Создай app/bot_app.py.
+         * Импортируй bot_main, bot_auth из telegram_service.
+         * Импортируй Dispatcher, RedisStorage из aiogram.fsm.storage.redis, Redis из redis.asyncio, settings.
+         * redis_client = Redis.from_url(settings.REDIS_URL).
+         * storage = RedisStorage(redis=redis_client).
+         * Создай dp_main = Dispatcher(storage=storage) и dp_auth = Dispatcher().
+         * Импортируй роутеры (файлов еще нет, но напиши): from app.routers import bot_main, bot_auth.
+         * dp_main.include_router(bot_main.router).
+         * dp_auth.include_router(bot_auth.router)."
+         5. Промпт 4.5 (Webhook Endpoints): "Отредактируй app/main.py.
+         * Импортируй dp_main, dp_auth, bot_main, bot_auth из bot_app, Request.
+         * Реализуй POST /bot/main/webhook :
+         * update = await request.json().
+         * await dp_main.feed_update(bot_main, update).
+         * Реализуй POST /bot/auth/webhook :
+         * update = await request.json().
+         * await dp_auth.feed_update(bot_auth, update)."
+         6. Промпт 4.6 (Bot Main - Start и FSM): "Создай app/routers/bot_main.py.
+         * Импортируй Router, F, Message, Command.
+         * Импортируй FSMContext, StatesGroup, State из aiogram.fsm.context.
+         * Импортируй Session, get_db, User, Campaign.
+         * Создай router = Router().
+         * Создай class BirthdayInput(StatesGroup): waiting_for_date = State()..17
+         * Реализуй @router.message(Command('start')) :
+         * db: Session = next(get_db()).
+         * Найди или создай User. user.is_test = (bot.id == settings.TELEGRAM_MAIN_BOT_TOKEN)..
+         * Обработай ref_....
+         * Отправь приветствие и клавиатуру ('Мои скидки', 'Проверить подписку', 'Указать ДР').
+         * Реализуй хэндлер 'Указать ДР': @router.message(F.text == 'Указать ДР'). Логика: 1. await message.answer('Введите дату'). 2. await state.set_state(BirthdayInput.waiting_for_date).
+         * Реализуй хэндлер для ввода ДР: @router.message(BirthdayInput.waiting_for_date, F.text). Логика :
+         * Реализуй функцию парсинга (форматы 03.02.2002, 3 2 2002).
+         * Если успех: user.birthday =..., await state.clear().
+         * Если ошибка: await message.answer('Неверный формат').
+         * Реализуй хэндлер отмены: @router.message(Command('cancel'), state='*'). Логика: await state.clear(), await message.answer('Отменено')..18"
+         7. Промпт 4.7 (Bot Main - Подписка): "В app/routers/bot_main.py добавь хэндлер:
+         * @router.message(F.text == 'Проверить подписку').
+         * Логика: 1. db: Session =.... 2. sub_service = SubscriptionService(). 3. is_member = await sub_service.check_subscription(db, user, settings.telegram_channel_id). 4. Если is_member:
+         * discount_service = DiscountService().
+         * discount = await discount_service.give_discount_from_template(db, user, event='subscription').
+         * Если discount: ответь 'Ваша скидка: {discount.code}'.
+         * Если None (уже выдана): ответь 'Вы уже получали скидку'.
+         *          5. Если not is_member: ответь 'Вы не подписаны'."
+         8. Промпт 4.8 (Bot Main - Мои Скидки): "В app/routers/bot_main.py добавь хэндлер:
+         * @router.message(F.text == 'Мои скидки').
+         * Логика: 1. db: Session =.... 2. Найди Discount, где user_id == user.id И used_at IS NULL И expires_at > NOW(). 3. Если нет: 'У вас нет активных скидок'. 4. Если есть: отформатируй и отправь список."
+         9. Промпт 4.9 (Bot Auth - Логика кассира): "Создай app/routers/bot_auth.py.
+         * Импортируй Router, F, Message, CallbackQuery.
+         * Импортируй Session, get_db, Cashier, Admin, Discount, DiscountUsageLog, User.
+         * Создай router = Router().
+         * Реализуй хэндлер на текстовое сообщение: @router.message(F.text).
+         * Логика : 1. db: Session =.... 2. Найди Cashier по telegram_id.
+         *          3. Если cashier is None: создай Cashier(is_active=0) и Admin(is_active=0, role='readonly'). Ответь 'Запрос отправлен'.
+         *          4. Если cashier.is_active == 0: ответь 'Ваш запрос на рассмотрении'.
+         *          5. Если кассир активен (Логика погашения): 11
+         * code = message.text.upper().strip(). (Добавь нормализацию префикса ).
+         * log = DiscountUsageLog(cashier_id=cashier.id, code=code).
+         * discount = db.query(Discount).filter(Discount.code == code).first().
+         * Проверка 1 (Не найден): Если not discount: log.status = 'not_found'. db.add(log). Ответь 'Код не найден'.
+         * Проверка 2 (Использован): Если discount.used_at: log.status = 'already_used'. db.add(log). Ответь 'Код уже погашен'.
+         * Проверка 3 (Истек): Если discount.expires_at < NOW(): log.status = 'expired'. db.add(log). Ответь 'Код истек'.
+         * Успех: Найди User по discount.user_id. log.user_id = user.id.. Отправь кассиру 'Код валиден. Клиент: {user.display_name}. Погасить?' (с Inline-кнопкой 'Погасить' с callback_data=f'redeem:{code}')."
+         10. Промпт 4.10 (Bot Auth - Callback погашения): "В app/routers/bot_auth.py добавь CallbackQueryHandler:
+         * @router.callback_query(F.data.startswith('redeem:')).
+         * Логика : 1. db: Session =.... 2. Найди кассира. 3. code = callback.data.split(':'). 4. Повтори все проверки из Промпта 4.9.
+         *          5. Если все ОК: discount.used_at = NOW().
+         *          6. log = DiscountUsageLog(..., status='success'). db.add(log).
+         *          7. db.commit().
+         *          8. Ответь кассиру 'Погашено ✅'.
+         *          9. Критично (Уведомление): Импортируй bot_main и TelegramService. Вызови await TelegramService.send_message(bot_main, user.telegram_id, f'Ваш код {code} использован.')."
+         11. Промпт 4.11 (API Users): "Создай app/routers/users.py.
+         * router = APIRouter(prefix='/api/v1/users', tags=['Users'], dependencies=).
+         * Импортируй get_admin_with_role.
+         * Реализуй GET / :
+         * Принимает db: Session, пагинацию, и все фильтры из , 5.3.2 (search, is_subscribed, gender, age_from, is_test: bool = False).
+         * Критично: По умолчанию is_test=False.
+         * Критично: Не отдавай phone роли readonly.
+         * Реализуй GET /{id} :
+         * Отдает UserSchema + active_discounts и discount_history.
+         * Реализуй PATCH /{id} :
+         * dependencies=.
+         * Принимает UserUpdate схему. Обновляет юзера. Записывает в AuditLog."
+         12. Промпт 4.12+ (Остальные API):
+________________
+            * Промпт 4.13 (API Cashiers): "Создай app/routers/cashiers.py. prefix='/api/v1/cashiers'.
+            * GET /requests (показывает Cashier где is_active=0).
+            * POST /{id}/activate dependencies=. Логика: cashier.is_active = True, db.add(AuditLog(action='approve_cashier')).
+            * POST /{id}/deactivate (аналогично)."
+            * Промпт 4.14 (API Broadcasts): "Создай app/routers/broadcasts.py. prefix='/api/v1/broadcasts'.
+            * dependencies=.
+            * POST /. Логика: 1. Принимает схему BroadcastCreate. 2. Создает Broadcast(status='scheduled'). 3. db.commit(). 4. Импортируй send_broadcast из app.tasks.broadcasts. 5. Вызови send_broadcast.delay(broadcast.id).
+10
+."
+               * Промпт 4.15 (API Settings): "Создай app/routers/settings.py. prefix='/api/v1/settings'.
+               * GET / (отдает все настройки из Setting как dict).
+               * PATCH / dependencies=. Логика: итерация по key/value в dict, обновление в Setting. Критично: db.add(AuditLog(action='update_setting', payload={'key': key, 'old':..., 'new':...}))."
+               * (Оператор): Создай оставшиеся роутеры (campaigns, discounts, reports) по аналогии, всегда добавляя NFR-требования (роли, аудит) в промпт.
+               13. Промпт 4.16 (Обновление Main): "Отредактируй app/main.py. Импортируй и app.include_router() все созданные роутеры (auth, users, cashiers, broadcasts, settings...)."
+
+
+Фаза 5: Генерация Frontend (Admin Panel)
+
+
+Примечание: Предполагается, что оператор использует create-react-app --template typescript.
+               1. Промпт 5.1 (API Client): "Создай frontend/src/api/client.ts.
+               * Используй axios.
+               * Создай apiClient = axios.create({ baseURL: '/api/v1' }).
+               * Добавь request interceptor, который читает access_token из localStorage и добавляет Authorization: Bearer... заголовок."
+               2. Промпт 5.2 (Auth): "Создай frontend/src/pages/LoginPage.tsx.
+               * Компонент должен использовать useSearchParams (react-router) для чтения token из URL.
+               * В useEffect (при наличии token): вызови apiClient.post('/auth/login-token', { token }).
+               * При успехе: сохрани response.data.access_token и response.data.admin в localStorage (или AuthContext) и сделай редирект на /dashboard."
+               3. Промпт 5.3 (Users List): "Создай frontend/src/pages/UsersListPage.tsx.
+               * Используй react-table (или mui-datagrid).
+               * В useEffect: вызови apiClient.get('/users', { params:... }).
+               * Реализуй state-переменные для всех фильтров из , 5.3.2 (поля ввода для search, селекты для gender, чекбокс is_test). При изменении state — делай повторный fetch.
+               * Таблица должна отображать все поля из , 5.3.2."
+               4. Промпт 5.4 (Cashiers Page): "Создай frontend/src/pages/CashiersPage.tsx.
+               * Страница должна иметь 2 вкладки: 'Активные' (GET /cashiers?active=true) и 'Запросы' (GET /cashiers?active=false или GET /cashiers/requests ).
+               * Во вкладке 'Запросы' у каждой строки должна быть кнопка 'Активировать'.
+               * onClick кнопки 'Активировать': await apiClient.post(/cashiers/${cashier.id}/activate), затем обнови список."
+               5. (Оператор): Повтори процесс для каждой страницы админки (Broadcasts, Campaigns, Settings).
+
+
+Фаза 6: Верификация и тесты
+
+
+               1. Промпт 6.1 (Тест парсинга ДР): "Создай app/tests/test_birthday_parser.py (используя pytest).
+               * (Сначала создай app/services/parsing_service.py с функцией parse_birthday).
+               * Создай test_parse_birthday с @pytest.mark.parametrize.
+               * Проверь все форматы из , 1.9: ('03.02.2002', date(2002, 2, 3)), ('3 2 2002', date(2002, 2, 3)), ('3,2,2002', date(2002, 2, 3)), ('3 февраля 2002', date(2002, 2, 3)).
+               * Также проверь невалидный: ('99.99.9999', None)."
+               2. Промпт 6.2 (Тест логики скидок): "Создай app/tests/test_discount_service.py (используя pytest и моки БД).
+               * Создай тест test_discount_recurrence.
+               * Логика: 1. Создай юзера и шаблон subscription (30 дней). 2. Вызови DiscountService.give_discount. 3. Убедись, что скидка создана. 4. Снова вызови give_discount. 5. Убедись, что вторая скидка is None. 6. Перемести время (freezegun) на 31 день вперед. 7. Снова вызови give_discount. 8. Убедись, что скидка создана."
+               3. Промпт 6.3 (Тест NFR - Безопасность): "Создай app/tests/test_api_cashiers.py (используя pytest и TestClient FastAPI).
+               * Создай тест test_cashier_activation_requires_owner..8
+               * Логика: 1. Создай в БД админа admin_mkt (роль marketing) и admin_owner (роль owner). 2. Создай cashier_req. 3. Сгенерируй token_mkt для admin_mkt. 4. response = client.post('/api/v1/cashiers/{id}/activate', headers={'Authorization': f'Bearer {token_mkt}'}). 5. assert response.status_code == 403.
+               *                6. Сгенерируй token_owner. 7. response = client.post(..., headers={'Authorization': f'Bearer {token_owner}'}). 8. assert response.status_code == 200."
+Источники
+               1. Gemini 2.5 pro context window seems to be much less than 1M · Issue #8303 · microsoft/vscode-copilot-release - GitHub, дата последнего обращения: ноября 4, 2025, https://github.com/microsoft/vscode-copilot-release/issues/8303
+               2. why is copilot context window still so small? : r/github - Reddit, дата последнего обращения: ноября 4, 2025, https://www.reddit.com/r/github/comments/1ek2563/why_is_copilot_context_window_still_so_small/
+               3. Anyone else notice the context window is MUCH smaller on Copilot vs other AI IDEs (Cursor, Kiro, etc) - Reddit, дата последнего обращения: ноября 4, 2025, https://www.reddit.com/r/GithubCopilot/comments/1mwv0cl/anyone_else_notice_the_context_window_is_much/
+               4. Using Gemini to Code - more complex projects : r/GoogleGeminiAI - Reddit, дата последнего обращения: ноября 4, 2025, https://www.reddit.com/r/GoogleGeminiAI/comments/1lqpgm0/using_gemini_to_code_more_complex_projects/
+               5. Non-Functional Requirements Examples: a Full Guide - Testomat.io, дата последнего обращения: ноября 4, 2025, https://testomat.io/blog/non-functional-requirements-examples-definition-complete-guide/
+               6. [2503.15248] Automated Non-Functional Requirements Generation in Software Engineering with Large Language Models: A Comparative Study - arXiv, дата последнего обращения: ноября 4, 2025, https://arxiv.org/abs/2503.15248
+               7. RobuNFR: Evaluating the Robustness of Large Language Models on Non-Functional Requirements Aware Code Generation - arXiv, дата последнего обращения: ноября 4, 2025, https://arxiv.org/html/2503.22851v1
+               8. Studying Non-Functional-Requirement-Aware Code Generation Using Large Language Models - OpenReview, дата последнего обращения: ноября 4, 2025, https://openreview.net/attachment?id=RDuhx3Kehn&name=pdf
+               9. Speed Up Gen AI Apps: How Celery + Redis Eliminated 60-Second API Freezes in My IELTS-AI Project | by Paprika | Sep, 2025 | Medium, дата последнего обращения: ноября 4, 2025, https://medium.com/@amirabdallahpfe/speed-up-gen-ai-apps-how-celery-redis-eliminated-60-second-api-freezes-in-my-ielts-ai-project-a9f827ee7182
+               10. Debugging AI-Generated Code: 8 Failure Patterns & Fixes, дата последнего обращения: ноября 4, 2025, https://www.augmentcode.com/guides/debugging-ai-generated-code-8-failure-patterns-and-fixes
+               11. Problems with initial migrations with Alembic while creating tables with foreign key, дата последнего обращения: ноября 4, 2025, https://stackoverflow.com/questions/77674027/problems-with-initial-migrations-with-alembic-while-creating-tables-with-foreign
+               12. Unable to auto-generate migrations using alembic [closed] - Stack Overflow, дата последнего обращения: ноября 4, 2025, https://stackoverflow.com/questions/19899476/unable-to-auto-generate-migrations-using-alembic
+               13. Mapping issues from Sqlalchemy to Pydantic - from_orm failed - Stack Overflow, дата последнего обращения: ноября 4, 2025, https://stackoverflow.com/questions/64013678/mapping-issues-from-sqlalchemy-to-pydantic-from-orm-failed
+               14. Creating Telegram Bots | Guide by Hostman, дата последнего обращения: ноября 4, 2025, https://hostman.com/tutorials/how-to-create-and-set-up-a-telegram-chatbot/
+               15. Exploring Finite State Machine in Aiogram 3: A Powerful Tool for Telegram Bot Development | by SP-Lutsk Team - Medium, дата последнего обращения: ноября 4, 2025, https://medium.com/sp-lutsk/exploring-finite-state-machine-in-aiogram-3-a-powerful-tool-for-telegram-bot-development-9cd2d19cfae9
+               16. Examples of business logic vulnerabilities | Web Security Academy - PortSwigger, дата последнего обращения: ноября 4, 2025, https://portswigger.net/web-security/logic-flaws/examples
+               17. FastAPI, RabbitMQ, Celery: what's wrong with the code? - Stack Overflow, дата последнего обращения: ноября 4, 2025, https://stackoverflow.com/questions/75352305/fastapi-rabbitmq-celery-whats-wrong-with-the-code
