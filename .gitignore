@@ -146,6 +146,7 @@ cython_debug/
 
 # MacOS
 .DS_Store
+v1/.env
 
 # Project specific
 *.log
