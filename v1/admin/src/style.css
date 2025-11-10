@@ -1,0 +1,47 @@
+body {
+    font-family: sans-serif;
+}
+
+#app {
+    padding: 20px;
+}
+
+.db-editor-container {
+    display: flex;
+}
+
+.db-tables {
+    width: 200px;
+    border-right: 1px solid #ccc;
+    padding-right: 20px;
+}
+
+.db-table-data {
+    padding-left: 20px;
+    flex-grow: 1;
+}
+
+#tables-list {
+    list-style: none;
+    padding: 0;
+}
+
+#tables-list li {
+    cursor: pointer;
+    padding: 5px;
+}
+
+#tables-list li:hover {
+    background-color: #eee;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th, td {
+    border: 1px solid #ccc;
+    padding: 8px;
+    text-align: left;
+}
