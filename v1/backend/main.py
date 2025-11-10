@@ -1,8 +1,9 @@
 from fastapi import FastAPI
 import models
-from database import engine
+from database import engine, wait_for_db
 from routers import users, coupons, campaigns, database
 
+wait_for_db(engine)
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
