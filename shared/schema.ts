@@ -437,3 +437,22 @@ export const insertEventLogSchema = createInsertSchema(eventLogs).omit({
 });
 export type InsertEventLog = z.infer<typeof insertEventLogSchema>;
 export type EventLog = typeof eventLogs.$inferSelect;
+
+// ============================================================================
+// UTILITY SCHEMAS
+// ============================================================================
+
+export const targetAudienceSchema = z.object({
+  all: z.boolean().optional(),
+  subscribed: z.boolean().optional(),
+  gender: z.enum(["male", "female", "unknown"]).optional(),
+  ageFrom: z.number().optional(),
+  ageTo: z.number().optional(),
+  tags: z.array(z.string()).optional(),
+  source: z.string().optional(),
+  hasActiveDiscounts: z.boolean().optional(),
+  registeredAfter: z.string().optional(),
+  registeredBefore: z.string().optional(),
+});
+
+export type TargetAudience = z.infer<typeof targetAudienceSchema>;

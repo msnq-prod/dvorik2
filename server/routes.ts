@@ -18,6 +18,7 @@ import {
   updateBroadcastSchema,
   insertSettingSchema,
   insertEventLogSchema,
+  targetAudienceSchema,
 } from "@shared/schema";
 import { z } from "zod";
 
@@ -89,6 +90,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(user);
     } catch (error) {
       console.error("Error fetching user:", error);
+      res.status(500).json({ error: "Failed to fetch user" });
+    }
+  });
+
+  app.get("/api/users/telegram/:telegramId", async (req: Request, res: Response) => {
+    try {
+      const telegramId = parseInt(req.params.telegramId, 10);
+      const user = await storage.getUserByTelegramId(telegramId);
+      
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+      
+      res.json(user);
+    } catch (error) {
+      console.error("Error fetching user by telegram ID:", error);
       res.status(500).json({ error: "Failed to fetch user" });
     }
   });
@@ -189,6 +206,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching cashiers:", error);
       res.status(500).json({ error: "Failed to fetch cashiers" });
+    }
+  });
+
+  app.get("/api/cashiers/:id", async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      const cashier = await storage.getCashier(id);
+      
+      if (!cashier) {
+        return res.status(404).json({ error: "Cashier not found" });
+      }
+      
+      res.json(cashier);
+    } catch (error) {
+      console.error("Error fetching cashier:", error);
+      res.status(500).json({ error: "Failed to fetch cashier" });
+    }
+  });
+
+  app.get("/api/cashiers/telegram/:telegramId", async (req: Request, res: Response) => {
+    try {
+      const telegramId = parseInt(req.params.telegramId, 10);
+      const cashier = await storage.getCashierByTelegramId(telegramId);
+      
+      if (!cashier) {
+        return res.status(404).json({ error: "Cashier not found" });
+      }
+      
+      res.json(cashier);
+    } catch (error) {
+      console.error("Error fetching cashier by telegram ID:", error);
+      res.status(500).json({ error: "Failed to fetch cashier" });
     }
   });
 
@@ -389,6 +438,97 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Specialized discount operations
+  app.post("/api/discounts/issue", async (req: Request, res: Response) => {
+    try {
+      const schema = z.object({
+        userId: z.number(),
+        templateId: z.number(),
+        campaignId: z.number().optional(),
+      });
+      const data = schema.parse(req.body);
+      const result = await storage.issueDiscount(data.userId, data.templateId, data.campaignId);
+      
+      if (!result.success) {
+        return res.status(400).json({ error: result.error });
+      }
+      
+      res.status(201).json(result.discount);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: error.errors });
+      }
+      console.error("Error issuing discount:", error);
+      res.status(500).json({ error: "Failed to issue discount" });
+    }
+  });
+
+  app.post("/api/discounts/redeem", async (req: Request, res: Response) => {
+    try {
+      const schema = z.object({
+        code: z.string(),
+        cashierId: z.number(),
+      });
+      const data = schema.parse(req.body);
+      const result = await storage.redeemDiscount(data.code, data.cashierId);
+      
+      if (!result.success) {
+        return res.status(400).json({ error: result.error });
+      }
+      
+      res.json({
+        success: true,
+        discount: result.discount,
+        user: result.user,
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: error.errors });
+      }
+      console.error("Error redeeming discount:", error);
+      res.status(500).json({ error: "Failed to redeem discount" });
+    }
+  });
+
+  app.post("/api/discounts/validate", async (req: Request, res: Response) => {
+    try {
+      const schema = z.object({
+        code: z.string(),
+      });
+      const data = schema.parse(req.body);
+      const result = await storage.validateDiscount(data.code);
+      
+      res.json(result);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: error.errors });
+      }
+      console.error("Error validating discount:", error);
+      res.status(500).json({ error: "Failed to validate discount" });
+    }
+  });
+
+  app.get("/api/discounts/user/:userId/active", async (req: Request, res: Response) => {
+    try {
+      const userId = parseInt(req.params.userId, 10);
+      const discounts = await storage.getUserActiveDiscounts(userId);
+      res.json(discounts);
+    } catch (error) {
+      console.error("Error fetching user active discounts:", error);
+      res.status(500).json({ error: "Failed to fetch user active discounts" });
+    }
+  });
+
+  app.post("/api/discounts/expire", async (req: Request, res: Response) => {
+    try {
+      const count = await storage.expireDiscounts();
+      res.json({ count });
+    } catch (error) {
+      console.error("Error expiring discounts:", error);
+      res.status(500).json({ error: "Failed to expire discounts" });
+    }
+  });
+
   // ============================================================================
   // CAMPAIGNS
   // ============================================================================
@@ -555,6 +695,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching broadcast logs:", error);
       res.status(500).json({ error: "Failed to fetch broadcast logs" });
+    }
+  });
+
+  // Specialized broadcast operations
+  app.post("/api/broadcasts/calculate-audience", async (req: Request, res: Response) => {
+    try {
+      const { targetAudience } = req.body;
+      const validatedAudience = targetAudienceSchema.parse(targetAudience);
+      const count = await storage.calculateBroadcastAudience(validatedAudience);
+      res.json({ count });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: error.errors });
+      }
+      console.error("Error calculating broadcast audience:", error);
+      res.status(500).json({ error: "Failed to calculate broadcast audience" });
+    }
+  });
+
+  app.post("/api/broadcasts/:id/preview-audience", async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      const broadcast = await storage.getBroadcast(id);
+      
+      if (!broadcast) {
+        return res.status(404).json({ error: "Broadcast not found" });
+      }
+      
+      const users = await storage.getUsersForBroadcast(broadcast.targetAudience);
+      res.json({ users, count: users.length });
+    } catch (error) {
+      console.error("Error previewing broadcast audience:", error);
+      res.status(500).json({ error: "Failed to preview broadcast audience" });
     }
   });
 

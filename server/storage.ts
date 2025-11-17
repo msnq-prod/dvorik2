@@ -75,6 +75,12 @@ export interface IStorage {
   createDiscount(discount: InsertDiscount): Promise<Discount>;
   updateDiscount(id: number, discount: Partial<InsertDiscount>): Promise<Discount | undefined>;
   getActiveDiscountsCount(): Promise<number>;
+  generateDiscountCode(): Promise<string>;
+  issueDiscount(userId: number, templateId: number, campaignId?: number): Promise<{ success: boolean; discount?: Discount; error?: string }>;
+  redeemDiscount(code: string, cashierId: number): Promise<{ success: boolean; discount?: Discount; error?: string; user?: User }>;
+  validateDiscount(code: string): Promise<{ valid: boolean; discount?: Discount; error?: string; user?: User }>;
+  expireDiscounts(): Promise<number>;
+  getUserActiveDiscounts(userId: number): Promise<Discount[]>;
 
   // Campaigns
   getCampaign(id: number): Promise<Campaign | undefined>;
@@ -93,6 +99,8 @@ export interface IStorage {
   }): Promise<Broadcast[]>;
   createBroadcast(broadcast: InsertBroadcast): Promise<Broadcast>;
   updateBroadcast(id: number, broadcast: Partial<InsertBroadcast>): Promise<Broadcast | undefined>;
+  calculateBroadcastAudience(targetAudience: any): Promise<number>;
+  getUsersForBroadcast(targetAudience: any): Promise<User[]>;
 
   // Broadcast Logs
   getBroadcastLogs(broadcastId: number): Promise<BroadcastLog[]>;
@@ -676,6 +684,388 @@ export class PostgresStorage implements IStorage {
       totalDiscountsIssued: totalDiscountsCount.count,
       subscribedUsers: subscribedCount.count,
     };
+  }
+
+  // ============================================================================
+  // SPECIALIZED DISCOUNT OPERATIONS
+  // ============================================================================
+
+  async generateDiscountCode(): Promise<string> {
+    const cyrillicLetters = "АБВГДЕЖЗИКЛМНОПРСТУФХЦЧШЩЭЮЯ";
+    
+    for (let attempts = 0; attempts < 10; attempts++) {
+      let code = "";
+      
+      // 3 Cyrillic letters
+      for (let i = 0; i < 3; i++) {
+        code += cyrillicLetters[Math.floor(Math.random() * cyrillicLetters.length)];
+      }
+      
+      // 4 digits
+      for (let i = 0; i < 4; i++) {
+        code += Math.floor(Math.random() * 10);
+      }
+      
+      // Check if code already exists
+      const existing = await this.getDiscountByCode(code);
+      if (!existing) {
+        return code;
+      }
+    }
+    
+    throw new Error("Failed to generate unique discount code after 10 attempts");
+  }
+
+  async issueDiscount(
+    userId: number,
+    templateId: number,
+    campaignId?: number
+  ): Promise<{ success: boolean; discount?: Discount; error?: string }> {
+    try {
+      // Get template
+      const template = await this.getDiscountTemplate(templateId);
+      if (!template) {
+        return { success: false, error: "Template not found" };
+      }
+
+      if (!template.isActive) {
+        return { success: false, error: "Template is not active" };
+      }
+
+      // Check if user exists
+      const user = await this.getUser(userId);
+      if (!user) {
+        return { success: false, error: "User not found" };
+      }
+
+      // Check usage limits based on template recurrence
+      if (template.recurrence) {
+        const existingDiscounts = await this.getDiscounts({
+          userId,
+          limit: 1000,
+        });
+
+        const discountsForTemplate = existingDiscounts.filter(
+          (d) => d.templateId === templateId
+        );
+
+        if (template.recurrence.type === "monthly") {
+          // Check if user already got discount this month
+          const now = new Date();
+          const thisMonth = discountsForTemplate.find((d) => {
+            const issuedDate = new Date(d.issuedAt);
+            return (
+              issuedDate.getMonth() === now.getMonth() &&
+              issuedDate.getFullYear() === now.getFullYear()
+            );
+          });
+          if (thisMonth) {
+            return { success: false, error: "User already received this discount this month" };
+          }
+        } else if (template.recurrence.type === "days" && template.recurrence.value) {
+          // Check if enough days passed since last discount
+          const lastDiscount = discountsForTemplate[0];
+          if (lastDiscount) {
+            const daysSince = Math.floor(
+              (Date.now() - new Date(lastDiscount.issuedAt).getTime()) / (1000 * 60 * 60 * 24)
+            );
+            if (daysSince < template.recurrence.value) {
+              return {
+                success: false,
+                error: `User can receive this discount again in ${template.recurrence.value - daysSince} days`,
+              };
+            }
+          }
+        }
+      }
+
+      // Generate unique code
+      const code = await this.generateDiscountCode();
+
+      // Calculate expiration date
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + template.durationDays);
+
+      // Create discount
+      const discount = await this.createDiscount({
+        code,
+        userId,
+        templateId,
+        campaignId,
+        value: template.value,
+        valueType: template.valueType,
+        status: "active",
+        expiresAt,
+        isTest: user.isTest,
+      });
+
+      // Log event
+      await this.createEventLog({
+        eventType: "discount_issued",
+        userId,
+        discountId: discount.id,
+        metadata: {
+          templateId,
+          templateName: template.name,
+          code: discount.code,
+          value: discount.value,
+          valueType: discount.valueType,
+          expiresAt: discount.expiresAt,
+          campaignId,
+        },
+        message: `Discount ${code} issued to user ${userId} from template ${template.name}`,
+      });
+
+      return { success: true, discount };
+    } catch (error) {
+      console.error("Error issuing discount:", error);
+      return { success: false, error: String(error) };
+    }
+  }
+
+  async redeemDiscount(
+    code: string,
+    cashierId: number
+  ): Promise<{ success: boolean; discount?: Discount; error?: string; user?: User }> {
+    try {
+      // Validate first
+      const validation = await this.validateDiscount(code);
+      if (!validation.valid) {
+        // Log failed redemption attempt
+        await this.createEventLog({
+          eventType: "discount_redemption_attempt",
+          cashierId,
+          metadata: {
+            code,
+            reason: validation.error,
+            success: false,
+          },
+          message: `Failed redemption attempt for code ${code}: ${validation.error}`,
+        });
+        return { success: false, error: validation.error };
+      }
+
+      const discount = validation.discount!;
+      const user = validation.user!;
+
+      // Update discount status
+      const updatedDiscount = await this.updateDiscount(discount.id, {
+        status: "used",
+        usedAt: new Date(),
+        usedByCashierId: cashierId,
+      });
+
+      if (!updatedDiscount) {
+        return { success: false, error: "Failed to update discount" };
+      }
+
+      // Log successful redemption
+      await this.createEventLog({
+        eventType: "discount_redeemed",
+        userId: user.id,
+        cashierId,
+        discountId: discount.id,
+        metadata: {
+          code,
+          value: discount.value,
+          valueType: discount.valueType,
+          success: true,
+        },
+        message: `Discount ${code} redeemed by cashier ${cashierId} for user ${user.id}`,
+      });
+
+      return { success: true, discount: updatedDiscount, user };
+    } catch (error) {
+      console.error("Error redeeming discount:", error);
+      return { success: false, error: String(error) };
+    }
+  }
+
+  async validateDiscount(
+    code: string
+  ): Promise<{ valid: boolean; discount?: Discount; error?: string; user?: User }> {
+    try {
+      const discount = await this.getDiscountByCode(code);
+      if (!discount) {
+        return { valid: false, error: "Discount code not found" };
+      }
+
+      if (discount.status !== "active") {
+        return { valid: false, error: `Discount is ${discount.status}`, discount };
+      }
+
+      const now = new Date();
+      if (discount.expiresAt < now) {
+        // Auto-expire
+        await this.updateDiscount(discount.id, { status: "expired" });
+        return { valid: false, error: "Discount has expired", discount };
+      }
+
+      const user = await this.getUser(discount.userId);
+      if (!user) {
+        return { valid: false, error: "User not found", discount };
+      }
+
+      return { valid: true, discount, user };
+    } catch (error) {
+      console.error("Error validating discount:", error);
+      return { valid: false, error: String(error) };
+    }
+  }
+
+  async expireDiscounts(): Promise<number> {
+    try {
+      const now = new Date();
+      const result = await db
+        .update(schema.discounts)
+        .set({ status: "expired" })
+        .where(
+          and(
+            eq(schema.discounts.status, "active"),
+            lte(schema.discounts.expiresAt, now)
+          )!
+        );
+      return result.rowCount || 0;
+    } catch (error) {
+      console.error("Error expiring discounts:", error);
+      return 0;
+    }
+  }
+
+  async getUserActiveDiscounts(userId: number): Promise<Discount[]> {
+    return this.getDiscounts({
+      userId,
+      status: "active",
+      limit: 1000,
+    });
+  }
+
+  // ============================================================================
+  // BROADCAST AUDIENCE OPERATIONS
+  // ============================================================================
+
+  private buildAudienceQuery(targetAudience: any) {
+    let query = db.select().from(schema.users);
+    const conditions = [];
+
+    if (targetAudience.all) {
+      return query;
+    }
+
+    if (targetAudience.subscribed !== undefined) {
+      conditions.push(eq(schema.users.isSubscribed, targetAudience.subscribed));
+    }
+
+    if (targetAudience.gender) {
+      conditions.push(eq(schema.users.gender, targetAudience.gender));
+    }
+
+    if (targetAudience.source) {
+      conditions.push(eq(schema.users.source, targetAudience.source));
+    }
+
+    if (targetAudience.tags && targetAudience.tags.length > 0) {
+      conditions.push(
+        sql`${schema.users.tags} ?& array[${sql.join(
+          targetAudience.tags.map((tag: string) => sql`${tag}`),
+          sql`, `
+        )}]`
+      );
+    }
+
+    if (targetAudience.ageFrom || targetAudience.ageTo) {
+      const today = new Date();
+      if (targetAudience.ageTo) {
+        const minBirthdate = new Date(today.getFullYear() - targetAudience.ageTo, today.getMonth(), today.getDate());
+        conditions.push(gte(schema.users.birthday, minBirthdate.toISOString().split('T')[0]));
+      }
+      if (targetAudience.ageFrom) {
+        const maxBirthdate = new Date(today.getFullYear() - targetAudience.ageFrom, today.getMonth(), today.getDate());
+        conditions.push(lte(schema.users.birthday, maxBirthdate.toISOString().split('T')[0]));
+      }
+    }
+
+    if (targetAudience.registeredAfter) {
+      conditions.push(gte(schema.users.createdAt, new Date(targetAudience.registeredAfter)));
+    }
+
+    if (targetAudience.registeredBefore) {
+      conditions.push(lte(schema.users.createdAt, new Date(targetAudience.registeredBefore)));
+    }
+
+    if (conditions.length > 0) {
+      query = query.where(and(...conditions)!) as any;
+    }
+
+    return query;
+  }
+
+  async calculateBroadcastAudience(targetAudience: any): Promise<number> {
+    try {
+      const query = this.buildAudienceQuery(targetAudience);
+      const users = await query;
+      
+      // If hasActiveDiscounts filter is set, filter in-memory
+      if (targetAudience.hasActiveDiscounts !== undefined) {
+        const userIds = users.map((u) => u.id);
+        const activeDiscounts = await db
+          .select({ userId: schema.discounts.userId })
+          .from(schema.discounts)
+          .where(
+            and(
+              inArray(schema.discounts.userId, userIds),
+              eq(schema.discounts.status, "active")
+            )!
+          );
+        
+        const usersWithDiscounts = new Set(activeDiscounts.map((d) => d.userId));
+        
+        if (targetAudience.hasActiveDiscounts) {
+          return Array.from(usersWithDiscounts).length;
+        } else {
+          return users.filter((u) => !usersWithDiscounts.has(u.id)).length;
+        }
+      }
+      
+      return users.length;
+    } catch (error) {
+      console.error("Error calculating broadcast audience:", error);
+      return 0;
+    }
+  }
+
+  async getUsersForBroadcast(targetAudience: any): Promise<User[]> {
+    try {
+      const query = this.buildAudienceQuery(targetAudience);
+      const users = await query;
+      
+      // If hasActiveDiscounts filter is set, filter in-memory
+      if (targetAudience.hasActiveDiscounts !== undefined) {
+        const userIds = users.map((u) => u.id);
+        const activeDiscounts = await db
+          .select({ userId: schema.discounts.userId })
+          .from(schema.discounts)
+          .where(
+            and(
+              inArray(schema.discounts.userId, userIds),
+              eq(schema.discounts.status, "active")
+            )!
+          );
+        
+        const usersWithDiscounts = new Set(activeDiscounts.map((d) => d.userId));
+        
+        if (targetAudience.hasActiveDiscounts) {
+          return users.filter((u) => usersWithDiscounts.has(u.id));
+        } else {
+          return users.filter((u) => !usersWithDiscounts.has(u.id));
+        }
+      }
+      
+      return users;
+    } catch (error) {
+      console.error("Error getting users for broadcast:", error);
+      return [];
+    }
   }
 }
 
