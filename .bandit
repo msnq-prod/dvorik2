@@ -1,5 +1,0 @@
-[bandit]
-# Bandit configuration file
-exclude_dirs = /tests,/venv,/.venv,/alembic/versions
-skips = B101,B601
-
