@@ -1,0 +1,33 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { CommandExecutor, type CommandMetadata } from "./command-context";
+import { openDatabase } from "./database";
+import { InventoryReminderService } from "./inventory-reminder-service";
+import { applyMigrations } from "./migrations";
+import { createSqliteInventoryReminderRepositories } from "./sqlite-inventory-reminder-repositories";
+import { UnitOfWork } from "./unit-of-work";
+
+const directory = fs.mkdtempSync(path.join(os.tmpdir(), "dvorik-inventory-reminder-"));
+const database = openDatabase(path.join(directory, "reminder.sqlite"));
+database.executeScript("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL); INSERT INTO schema_migrations VALUES (1, datetime('now'));");
+applyMigrations(database);
+database.executeScript(`
+  INSERT INTO roles(id,name) VALUES ('admin','admin'),('super_admin','super_admin'),('seller','seller');
+  INSERT INTO users(id,status) VALUES ('u-admin','active'),('u-super','active'),('u-seller','active'),('u-blocked','blocked');
+  INSERT INTO user_roles(user_id,role_id) VALUES ('u-admin','admin'),('u-super','super_admin'),('u-seller','seller'),('u-blocked','admin');
+  INSERT INTO inventory_sessions(id,status,actor_id,comment,started_at,version,updated_at) VALUES ('inventory','active','u-seller','','2026-07-21T00:00:00.000Z',0,'2026-07-21T00:00:00.000Z');
+`);
+let sequence = 0;
+const service = new InventoryReminderService(new CommandExecutor(new UnitOfWork(database, createSqliteInventoryReminderRepositories), { now: () => "2026-07-21T03:00:00.000Z" }, { resolve: () => ({ kind: "system", service: "inventory-reminder", authenticatedBy: "worker_registry" }) }), { processingTimeoutMs: 30_000, idempotencyRetentionMs: 86_400_000, outboxMaxAttempts: 8, createId: (kind) => `${kind}-${++sequence}` });
+const metadata: CommandMetadata = { actorReference: "worker", requestId: "inventory-reminder:2026-07-21", channel: "worker", idempotencyKey: "inventory-reminder:2026-07-21" };
+const sent = service.run(metadata);
+assert.equal(sent.status, 200);
+assert.deepEqual(service.run(metadata), { ...sent, outcome: "replayed" });
+assert.equal(database.query<{ count: number }>("SELECT count(*) count FROM outbox_messages WHERE type='inventory.active'")[0].count, 2);
+assert.equal(database.query<{ count: number }>("SELECT count(*) count FROM webapp_notifications WHERE type='inventory.active'")[0].count, 2);
+assert.equal(database.query<{ count: number }>("SELECT count(*) count FROM outbox_messages WHERE recipient_user_id IN ('u-seller','u-blocked')")[0].count, 0);
+assert.equal(database.query<{ count: number }>("SELECT count(*) count FROM audit_entries WHERE entity_type='inventory_session' AND action='reminder'")[0].count, 1);
+database.close(); fs.rmSync(directory, { recursive: true, force: true });
+console.log("inventory reminder service tests passed");

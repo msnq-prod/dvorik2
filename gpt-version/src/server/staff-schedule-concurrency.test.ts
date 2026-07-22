@@ -1,0 +1,54 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { Worker } from "node:worker_threads";
+import { openDatabase } from "./database";
+import { applyMigrations } from "./migrations";
+
+type Message = { event: "attempting" | "mutation_started" | "result" | "error"; result?: any; error?: unknown };
+function waitFor(worker: Worker, event: Message["event"]): Promise<Message> {
+  return new Promise((resolve, reject) => { const listener = (message: Message) => { if (message.event !== event && message.event !== "error") return; worker.off("message", listener); message.event === "error" ? reject(new Error(JSON.stringify(message.error))) : resolve(message); }; worker.on("message", listener); worker.once("error", reject); });
+}
+const directory = fs.mkdtempSync(path.join(os.tmpdir(), "dvorik-staff-schedule-parallel-"));
+const databasePath = path.join(directory, "parallel.sqlite");
+const setup = openDatabase(databasePath);
+setup.executeScript("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL); INSERT INTO schema_migrations VALUES (1, datetime('now'));");
+applyMigrations(setup);
+setup.executeScript(`
+  INSERT INTO roles(id,name) VALUES ('seller','seller');
+  INSERT INTO users(id,status) VALUES ('u-a','active'),('u-b','active');
+  INSERT INTO user_roles(user_id,role_id) VALUES ('u-a','seller'),('u-b','seller');
+  INSERT INTO locations(id,code,name,type,status) VALUES ('loc','LOC','Точка','other','active');
+  INSERT INTO schedule_days(id,local_date,location_id,status,version) VALUES ('day-a','2026-08-01','loc','working',0),('day-b','2026-08-02','loc','working',0);
+  INSERT INTO shifts(id,schedule_day_id,location_id,local_date,start_time,end_time,status,version) VALUES ('shift-a','day-a','loc','2026-08-01','10:00','21:00','scheduled',0),('shift-b','day-b','loc','2026-08-02','10:00','21:00','scheduled',0);
+  INSERT INTO shift_assignments(shift_id,user_id) VALUES ('shift-a','u-a'),('shift-b','u-b');
+  INSERT INTO shift_exchange_requests(id,from_shift_id,to_shift_id,from_user_id,to_user_id,from_shift_version,to_shift_version,status,created_at,version,updated_at) VALUES ('exchange','shift-a','shift-b','u-a','u-b',0,0,'pending','2026-07-21T01:00:00.000Z',0,'2026-07-21T01:00:00.000Z');
+`);
+setup.close();
+const workerUrl = new URL("./staff-schedule-concurrency-worker.ts", import.meta.url);
+const tsxApiUrl = import.meta.resolve("tsx/esm/api");
+const bootstrap = new URL(`data:text/javascript,${encodeURIComponent(`import { tsImport } from ${JSON.stringify(tsxApiUrl)}; await tsImport(${JSON.stringify(workerUrl.href)}, ${JSON.stringify(workerUrl.href)});`)}`);
+const barrier = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+const holder = new Worker(bootstrap, { workerData: { databasePath, role: "holder", barrier, key: "accept-a" } });
+const holderExit = new Promise<void>((resolve) => holder.once("exit", () => resolve()));
+const mutation = waitFor(holder, "mutation_started");
+const holderResult = waitFor(holder, "result");
+await mutation;
+const contender = new Worker(bootstrap, { workerData: { databasePath, role: "contender", barrier, key: "accept-b" } });
+const contenderExit = new Promise<void>((resolve) => contender.once("exit", () => resolve()));
+const attempting = waitFor(contender, "attempting");
+const contenderResult = waitFor(contender, "result");
+await attempting;
+await new Promise((resolve) => setTimeout(resolve, 75));
+Atomics.store(new Int32Array(barrier), 0, 1); Atomics.notify(new Int32Array(barrier), 0);
+const [winner, loser] = (await Promise.all([holderResult, contenderResult])).map((message) => message.result);
+await Promise.all([holderExit, contenderExit]);
+assert.equal(winner.status, 200);
+assert.equal(loser.status, 409);
+assert.equal(loser.body.code, "STALE_EXCHANGE");
+const verification = openDatabase(databasePath);
+assert.deepEqual(verification.query<{ shift_id: string; user_id: string }>("SELECT shift_id,user_id FROM shift_assignments ORDER BY shift_id"), [{ shift_id: "shift-a", user_id: "u-b" }, { shift_id: "shift-b", user_id: "u-a" }]);
+assert.equal(verification.query<{ count: number }>("SELECT count(*) count FROM audit_entries WHERE entity_type='shift_exchange' AND action='accepted'")[0].count, 1);
+verification.close(); fs.rmSync(directory, { recursive: true, force: true });
+console.log("staff schedule concurrency tests passed");

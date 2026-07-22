@@ -1,0 +1,66 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]: Д
+      - generic [ref=e7]:
+        - strong [ref=e8]: Dvorik
+        - generic [ref=e9]: WebApp
+    - navigation [ref=e10]:
+      - button "Главная" [ref=e11] [cursor=pointer]:
+        - img [ref=e12]
+        - text: Главная
+      - button "Товары" [ref=e15] [cursor=pointer]:
+        - img [ref=e16]
+        - text: Товары
+      - button "Склад" [ref=e26] [cursor=pointer]:
+        - img [ref=e27]
+        - text: Склад
+      - button "Инвентаризация" [ref=e31] [cursor=pointer]:
+        - img [ref=e32]
+        - text: Инвентаризация
+      - button "Маркировки" [ref=e36] [cursor=pointer]:
+        - img [ref=e37]
+        - text: Маркировки
+      - button "График" [ref=e41] [cursor=pointer]:
+        - img [ref=e42]
+        - text: График
+      - button "Пользователи" [ref=e44] [cursor=pointer]:
+        - img [ref=e45]
+        - text: Пользователи
+      - button "Аудит" [ref=e50] [cursor=pointer]:
+        - img [ref=e51]
+        - text: Аудит
+  - main [ref=e53]:
+    - generic [ref=e54]:
+      - generic [ref=e55]:
+        - heading "Главная" [level=1] [ref=e56]
+        - paragraph [ref=e57]: Олег Админ · admin
+      - generic [ref=e58]:
+        - combobox [ref=e59]:
+          - option "Анна, super admin"
+          - option "Олег, admin" [selected]
+          - option "Маша, seller"
+          - option "Заблокированный"
+        - button "Тема" [ref=e60] [cursor=pointer]:
+          - img [ref=e61]
+    - generic [ref=e63]:
+      - generic [ref=e64]:
+        - generic [ref=e65]:
+          - text: Активные товары
+          - strong [ref=e66]: "3"
+        - generic [ref=e67]:
+          - text: Низкий остаток
+          - strong [ref=e68]: "3"
+        - generic [ref=e69]:
+          - text: Сейчас на смене
+          - strong [ref=e70]: "1"
+        - generic [ref=e71]:
+          - text: Уведомления
+          - strong [ref=e72]: "0"
+      - generic [ref=e73]:
+        - heading "Последние движения" [level=2] [ref=e74]
+        - generic [ref=e76]:
+          - img [ref=e77]
+          - generic [ref=e82]: Приход
+          - strong [ref=e83]: "18.5"
+          - generic [ref=e84]: Начальный приход

@@ -1,0 +1,54 @@
+# Negative Paths
+
+Checked paths and result:
+
+- Blocked user: `/api/session` rejects. UI shows error. OK for demo.
+- Direct API without session cookie: rejects with `AUTH_REQUIRED`. OK.
+- Seller direct `/api/users`: backend rejects. OK.
+- Seller direct `/api/audit`: backend rejects. OK.
+- Telegram init data with bad hash: rejects with `BAD_TELEGRAM_INIT_DATA`. OK.
+- Expired Telegram init data: covered by auth-date check. OK.
+- Stock negative quantity: backend rejects via `assertPositive`. OK.
+- Stock insufficient source: backend rejects. OK.
+- Stock duplicate idempotency: backend returns cached operation. OK.
+- Stock unknown product/location: backend rejects. OK.
+- Inventory missing idempotency key: backend rejects. OK.
+- Inventory negative actual: backend rejects. OK.
+- Inventory stale version: backend returns conflict. OK.
+- Reversal duplicate: backend blocks based on `reversedOperationId`. OK.
+- Reversal missing idempotency key: backend rejects. OK.
+- Schedule swap target missing/blocked: backend rejects. OK.
+- Schedule swap for non-scheduled shift: backend rejects. OK.
+- Schedule swap decline/cancel wrong actor: backend rejects. OK.
+- Schedule swap accept/decline/cancel lifecycle: fixed and covered by UI/API.
+- Schedule automatic status refresh: scheduled shift becomes `in_progress`, then `completed`. OK.
+- Schedule pending swap expiry: pending request becomes `expired` when linked shift starts/completes. OK.
+- Shift create by non-manager: backend rejects. OK.
+- Shift overlap for same employee/date/time: backend rejects. OK.
+- Shift copy/update overlap: backend rejects. OK.
+- Role change: stored permissions refresh after role patch. OK.
+- Process restart after mutation: fixed with SQLite-backed state and restart smoke.
+- Same idempotency key across different mutation types: fixed by scoped cache keys.
+- Reversal of reversal: fixed by explicit block.
+- Invalid product unit / low-stock threshold: fixed by API validation.
+- PDF label export with overflow/bad geometry: fixed by API validation.
+- Label quantities and saved reprint job: fixed by label job snapshot and reprint endpoint.
+- Label reprint missing job: backend returns 404. OK.
+- Valid EAN-13 label identifier: encoded/rendered as EAN-13. OK.
+- Invalid/non-EAN printable label identifier: encoded/rendered as Code 128. OK.
+- Backup creation/listing: fixed and permission-gated by `techlog:read`.
+- Backup restore: fixed and permission-gated by `techlog:read`.
+- CSV duplicate committed file hash: fixed by duplicate import guard.
+- CSV bad quantity/unit/missing name: fixed by commit validation.
+- Import with later bad row: fixed by pre-validating all rows before mutation.
+- Import undo without later movements: fixed by targeted product/receipt rollback.
+- Import undo after later stock movement: fixed by conflict block.
+- XLSX preview: fixed for simple `.xlsx` via base64 ZIP/XML parser.
+- XLS preview: fixed for simple BIFF8 `.xls` via base64 OLE/Workbook parser.
+- Merge same product/missing product: fixed by domain validation.
+- Merge undo: fixed from stored snapshot.
+- Merge operation links: source stock operations move to target on commit and restore on undo. OK.
+- Merge undo after later linked movement: blocked. OK.
+- Labels overflow/out-of-range: out-of-range blocks; overflow blocks print/download. OK.
+- OpenAPI endpoint: `/api/openapi.json` returns endpoint map. OK.
+- Mobile 390 px: layout collapses; tables intentionally horizontal-scroll. Requirement says no horizontal page scroll, but table local scroll remains. Needs runtime verification.

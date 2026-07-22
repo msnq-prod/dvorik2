@@ -1,0 +1,50 @@
+{
+  "name": "dvorik-gpt-version",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/server/index.ts",
+    "dev:test": "DVORIK_DEV_TOOLS=1 TELEGRAM_BOT_TOKEN=dev-token tsx src/server/index.ts",
+    "db:migrate": "tsx src/server/migrate.ts",
+    "db:convert-state": "tsx src/server/migrate.ts --convert-state",
+    "worker:telegram": "tsx src/server/telegram-worker.ts",
+    "worker:daily-digest": "tsx src/server/daily-digest.ts",
+    "worker:inventory-reminders": "tsx src/server/inventory-reminder.ts",
+    "worker:saby": "NODE_ENV=production node dist/saby-worker.js",
+    "job:backup": "NODE_ENV=production node dist/backup-job.js",
+    "verify:release": "npm run check && npm run test && npm run build && npm run test:release-artifact && npm run test:e2e",
+    "build": "vite build && esbuild src/server/index.ts src/server/backup-job.ts src/server/saby-worker.ts --platform=node --packages=external --bundle --format=esm --outdir=dist && node scripts/copy-migrations.mjs",
+    "start": "NODE_ENV=production node dist/index.js",
+    "check": "tsc --noEmit",
+    "test:e2e": "playwright test",
+    "test:release-artifact": "NODE_ENV=test tsx src/server/release-artifact-smoke.test.ts",
+    "pretest": "NODE_ENV=test tsx src/server/identity-service.test.ts",
+    "test": "NODE_ENV=test tsx src/server/config.test.ts && NODE_ENV=test tsx src/shared/quantity.test.ts && NODE_ENV=test tsx src/server/database.test.ts && NODE_ENV=test tsx src/server/unit-of-work.test.ts && NODE_ENV=test tsx src/server/repositories.test.ts && NODE_ENV=test tsx src/server/command-context.test.ts && NODE_ENV=test tsx src/server/idempotency.test.ts && NODE_ENV=test tsx src/server/idempotency-concurrency.test.ts && NODE_ENV=test tsx src/server/catalog-service.test.ts && NODE_ENV=test tsx src/server/notification-preference-service.test.ts && NODE_ENV=test tsx src/server/artifact-command-service.test.ts && NODE_ENV=test tsx src/server/transport-boundary.test.ts && NODE_ENV=test tsx src/server/stock-operation-service.test.ts && NODE_ENV=test tsx src/server/stock-operation-concurrency.test.ts && NODE_ENV=test tsx src/server/inventory-reversal-service.test.ts && NODE_ENV=test tsx src/server/inventory-session-service.test.ts && NODE_ENV=test tsx src/server/inventory-session-concurrency.test.ts && NODE_ENV=test tsx src/server/inventory-reversal-concurrency.test.ts && NODE_ENV=test tsx src/server/schedule-swap-service.test.ts && NODE_ENV=test tsx src/server/schedule-swap-concurrency.test.ts && NODE_ENV=test tsx src/server/staff-schedule-service.test.ts && NODE_ENV=test tsx src/server/session-service.test.ts && NODE_ENV=test tsx src/server/session-http.test.ts && NODE_ENV=test tsx src/server/mappers/core.test.ts && NODE_ENV=test tsx src/server/mappers/identity.test.ts && NODE_ENV=test tsx src/server/mappers/catalog.test.ts && NODE_ENV=test tsx src/server/mappers/schedule.test.ts && NODE_ENV=test tsx src/server/mappers/workflows.test.ts && NODE_ENV=test tsx src/server/mappers/runtime.test.ts && NODE_ENV=test tsx src/server/runtime-schema.test.ts && NODE_ENV=test tsx src/server/database-policy.test.ts && NODE_ENV=test tsx src/server/dev-tools.test.ts && NODE_ENV=test tsx src/server/domain.test.ts && NODE_ENV=test tsx src/server/reports.test.ts && NODE_ENV=test tsx src/client/src/pages/ReportsPage.test.tsx && NODE_ENV=test tsx src/client/src/pages/SchedulePage.test.tsx && NODE_ENV=test tsx src/shared/mediaUpload.test.ts && NODE_ENV=test tsx src/server/migrations.test.ts && NODE_ENV=test tsx src/server/state-migration.test.ts && NODE_ENV=test tsx src/server/media.test.ts && NODE_ENV=test tsx src/server/sqlite-catalog-query-service.test.ts && NODE_ENV=test tsx src/server/sqlite-outbox-dispatcher.test.ts && NODE_ENV=test tsx src/server/telegram-event-catalog.test.ts && NODE_ENV=test tsx src/server/telegram-worker.test.ts && NODE_ENV=test tsx src/server/saby-client.test.ts && NODE_ENV=test tsx src/server/saby-sync-service.test.ts && NODE_ENV=test tsx src/server/runtime-observability.test.ts && NODE_ENV=test tsx src/server/route-policy.test.ts && NODE_ENV=test tsx src/server/sqlite-backup.test.ts && NODE_ENV=test tsx src/server/backup-job.test.ts && NODE_ENV=test tsx src/server/production-rehearsal.test.ts"
+  },
+  "dependencies": {
+    "@types/pdfkit": "^0.17.6",
+    "@vitejs/plugin-react": "^6.0.3",
+    "better-sqlite3": "^12.11.1",
+    "date-fns": "^3.6.0",
+    "esbuild": "^0.28.1",
+    "express": "^4.21.2",
+    "lucide-react": "^0.453.0",
+    "nanoid": "^5.1.5",
+    "pdfkit": "^0.19.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "sharp": "^0.34.5",
+    "tsx": "^4.20.5",
+    "typescript": "5.6.3",
+    "vite": "^8.1.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/express": "4.17.21",
+    "@types/node": "^26.0.1",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1"
+  }
+}

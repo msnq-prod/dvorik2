@@ -1,0 +1,346 @@
+{
+  "users": [
+    {
+      "id": "u-super",
+      "telegramUserId": "1001",
+      "firstName": "Анна",
+      "lastName": "Владелец",
+      "username": "anna_owner",
+      "status": "active",
+      "role": "super_admin",
+      "permissions": [
+        "products:read",
+        "products:write",
+        "stock:move",
+        "inventory:write",
+        "reports:read",
+        "imports:write",
+        "merge:write",
+        "schedule:manage",
+        "users:manage",
+        "roles:manage",
+        "techlog:read",
+        "labels:print"
+      ]
+    },
+    {
+      "id": "u-admin",
+      "telegramUserId": "1002",
+      "firstName": "Олег",
+      "lastName": "Админ",
+      "username": "oleg_admin",
+      "status": "active",
+      "role": "admin",
+      "permissions": [
+        "products:read",
+        "products:write",
+        "stock:move",
+        "inventory:write",
+        "reports:read",
+        "imports:write",
+        "merge:write",
+        "schedule:manage",
+        "users:manage",
+        "techlog:read",
+        "labels:print"
+      ]
+    },
+    {
+      "id": "u-seller",
+      "telegramUserId": "1003",
+      "firstName": "Маша",
+      "lastName": "Продавец",
+      "username": "masha_shop",
+      "status": "active",
+      "role": "seller",
+      "permissions": [
+        "products:read",
+        "stock:move",
+        "inventory:write",
+        "labels:print"
+      ]
+    },
+    {
+      "id": "u-blocked",
+      "telegramUserId": "1004",
+      "firstName": "Игорь",
+      "lastName": "Блок",
+      "username": "blocked",
+      "status": "blocked",
+      "role": "seller",
+      "permissions": [
+        "products:read",
+        "stock:move",
+        "inventory:write",
+        "labels:print"
+      ]
+    }
+  ],
+  "products": [
+    {
+      "id": "p-1",
+      "officialName": "Мармелад ассорти",
+      "localName": "Ассорти",
+      "unit": "кг",
+      "photoUrl": "https://images.unsplash.com/photo-1582058091505-f87a2e55a40f?auto=format&fit=crop&w=900&q=80",
+      "category": "Весовой товар",
+      "tags": [
+        "хит",
+        "сладкое"
+      ],
+      "status": "active",
+      "identifiers": [
+        {
+          "id": "i-1",
+          "productId": "p-1",
+          "type": "supplier_article",
+          "value": "A-100",
+          "supplierId": "sup-1"
+        },
+        {
+          "id": "i-2",
+          "productId": "p-1",
+          "type": "barcode",
+          "value": "4601234567890"
+        }
+      ],
+      "lowStockThreshold": 5
+    },
+    {
+      "id": "p-2",
+      "officialName": "Пастила яблочная",
+      "localName": "Пастила яблоко",
+      "unit": "шт",
+      "photoUrl": "https://images.unsplash.com/photo-1606890737304-57a1ca8a5b62?auto=format&fit=crop&w=900&q=80",
+      "category": "Штучный товар",
+      "tags": [
+        "без сахара"
+      ],
+      "status": "active",
+      "identifiers": [
+        {
+          "id": "i-3",
+          "productId": "p-2",
+          "type": "supplier_article",
+          "value": "A-100",
+          "supplierId": "sup-2"
+        },
+        {
+          "id": "i-4",
+          "productId": "p-2",
+          "type": "barcode",
+          "value": "2000000000022"
+        }
+      ],
+      "lowStockThreshold": 12
+    },
+    {
+      "id": "p-3",
+      "officialName": "Шоколад фигурный",
+      "localName": "Фигурки",
+      "unit": "шт",
+      "photoUrl": "https://images.unsplash.com/photo-1606312619070-d48b4c652a52?auto=format&fit=crop&w=900&q=80",
+      "category": "Подарки",
+      "tags": [
+        "сезон"
+      ],
+      "status": "active",
+      "identifiers": [
+        {
+          "id": "i-5",
+          "productId": "p-3",
+          "type": "legacy_article",
+          "value": "LEG-77"
+        }
+      ],
+      "lowStockThreshold": 10
+    }
+  ],
+  "locations": [
+    {
+      "id": "loc-main",
+      "code": "WAREHOUSE",
+      "name": "Склад",
+      "type": "warehouse",
+      "status": "active"
+    },
+    {
+      "id": "loc-counter",
+      "code": "COUNTER",
+      "name": "За стойкой",
+      "type": "counter",
+      "status": "active"
+    },
+    {
+      "id": "loc-house",
+      "code": "HOUSE-1",
+      "name": "Домик 1",
+      "type": "house",
+      "status": "active"
+    }
+  ],
+  "balances": [
+    {
+      "productId": "p-1",
+      "locationId": "loc-main",
+      "quantity": 18.5,
+      "version": 1
+    },
+    {
+      "productId": "p-1",
+      "locationId": "loc-counter",
+      "quantity": 3,
+      "version": 1
+    },
+    {
+      "productId": "p-2",
+      "locationId": "loc-main",
+      "quantity": 32,
+      "version": 1
+    },
+    {
+      "productId": "p-2",
+      "locationId": "loc-house",
+      "quantity": 6,
+      "version": 1
+    },
+    {
+      "productId": "p-3",
+      "locationId": "loc-main",
+      "quantity": 8,
+      "version": 1
+    }
+  ],
+  "operations": [
+    {
+      "id": "op-seed-1",
+      "type": "receipt",
+      "productId": "p-1",
+      "toLocationId": "loc-main",
+      "quantity": 18.5,
+      "actorId": "u-admin",
+      "reason": "Начальный приход",
+      "idempotencyKey": "seed-1",
+      "createdAt": "2026-06-26T00:00:00.000Z"
+    }
+  ],
+  "shifts": [
+    {
+      "id": "shift-1",
+      "date": "2026-06-26",
+      "start": "09:00",
+      "end": "18:00",
+      "locationId": "loc-counter",
+      "employeeIds": [
+        "u-seller"
+      ],
+      "status": "completed",
+      "comment": "Открытие точки"
+    },
+    {
+      "id": "shift-2",
+      "date": "2026-06-27",
+      "start": "10:00",
+      "end": "19:00",
+      "locationId": "loc-house",
+      "employeeIds": [
+        "u-seller"
+      ],
+      "status": "completed",
+      "comment": "Инвентаризация витрины"
+    }
+  ],
+  "swaps": [
+    {
+      "id": "qKoafGR_-MmUi-jUgaU1u",
+      "fromShiftId": "shift-2",
+      "fromUserId": "u-admin",
+      "toUserId": "u-seller",
+      "status": "accepted",
+      "createdAt": "2026-06-26T09:24:43.131Z"
+    }
+  ],
+  "audit": [
+    {
+      "id": "EMVNYhMTIGf-hR3IB-vab",
+      "actorId": "system",
+      "entity": "shift",
+      "entityId": "shift-2",
+      "action": "auto_status",
+      "changes": {
+        "from": "scheduled",
+        "to": "completed"
+      },
+      "createdAt": "2026-06-28T16:32:46.345Z"
+    },
+    {
+      "id": "OH8821BohZG58cbdQoEd1",
+      "actorId": "u-seller",
+      "entity": "shift_swap",
+      "entityId": "qKoafGR_-MmUi-jUgaU1u",
+      "action": "accept",
+      "changes": {
+        "shiftId": "shift-2"
+      },
+      "createdAt": "2026-06-26T09:38:12.358Z"
+    },
+    {
+      "id": "3ZeNZG0VnK0_9qT8fcJoG",
+      "actorId": "u-admin",
+      "entity": "shift_swap",
+      "entityId": "qKoafGR_-MmUi-jUgaU1u",
+      "action": "create",
+      "changes": {
+        "id": "qKoafGR_-MmUi-jUgaU1u",
+        "fromShiftId": "shift-2",
+        "fromUserId": "u-admin",
+        "toUserId": "u-seller",
+        "status": "pending",
+        "createdAt": "2026-06-26T09:24:43.131Z"
+      },
+      "createdAt": "2026-06-26T09:24:43.131Z"
+    },
+    {
+      "id": "vOg22w8kqVG-B6GmiFYuH",
+      "actorId": "system",
+      "entity": "shift",
+      "entityId": "shift-1",
+      "action": "auto_status",
+      "changes": {
+        "from": "in_progress",
+        "to": "completed"
+      },
+      "createdAt": "2026-06-26T08:05:33.906Z"
+    },
+    {
+      "id": "22u7kKMzMedGg1MHutVfg",
+      "actorId": "system",
+      "entity": "shift",
+      "entityId": "shift-1",
+      "action": "auto_status",
+      "changes": {
+        "from": "scheduled",
+        "to": "in_progress"
+      },
+      "createdAt": "2026-06-26T04:02:07.416Z"
+    }
+  ],
+  "notifications": [
+    {
+      "id": "dHd0Z-V3RMm8yHWqUJDSf",
+      "channel": "webapp",
+      "userId": "u-admin",
+      "type": "shift_swap_accepted",
+      "payload": {
+        "swapId": "qKoafGR_-MmUi-jUgaU1u"
+      },
+      "read": false,
+      "createdAt": "2026-06-26T09:38:12.358Z"
+    }
+  ],
+  "imports": [],
+  "merges": [],
+  "labelJobs": [],
+  "sessions": [],
+  "idempotency": {}
+}

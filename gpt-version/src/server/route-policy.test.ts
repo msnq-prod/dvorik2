@@ -1,0 +1,21 @@
+import assert from "node:assert/strict";
+import { routePolicyFor } from "./route-policy";
+
+assert.deepEqual(routePolicyFor("POST", "/api/stock/operations"), { permission: "stock:move" });
+assert.deepEqual(routePolicyFor("PATCH", "/api/users/u-1"), { permission: "users:manage" });
+assert.deepEqual(routePolicyFor("POST", "/api/labels/jobs/job-1/pdf"), { permission: "labels:print" });
+assert.deepEqual(routePolicyFor("PUT", "/api/saby/mappings"), { permission: "saby:manage" });
+assert.deepEqual(routePolicyFor("POST", "/api/product-groups"), { permission: "products:write" });
+assert.deepEqual(routePolicyFor("POST", "/api/manufacturers"), { permission: "products:write" });
+assert.deepEqual(routePolicyFor("POST", "/api/product-prices"), { permission: "products:write" });
+assert.deepEqual(routePolicyFor("POST", "/api/products/p-1/packagings"), { permission: "products:write" });
+assert.deepEqual(routePolicyFor("POST", "/api/locations"), { permission: "products:write" });
+assert.deepEqual(routePolicyFor("PATCH", "/api/locations/loc-1"), { permission: "products:write" });
+assert.deepEqual(routePolicyFor("POST", "/api/inventory/sessions"), { permission: "inventory:write" });
+assert.deepEqual(routePolicyFor("POST", "/api/inventory/sessions/session-1/close"), { permission: "inventory:write" });
+assert.deepEqual(routePolicyFor("POST", "/api/consumption"), { permission: "inventory:write" });
+assert.deepEqual(routePolicyFor("POST", "/api/stock/adjustments"), { permission: "inventory:write" });
+assert.deepEqual(routePolicyFor("POST", "/api/hr-events"), { permission: "staff:manage" });
+assert.deepEqual(routePolicyFor("PUT", "/api/staff/u-1/profile"), { permission: "staff:manage" });
+assert.equal(routePolicyFor("POST", "/api/schedule/exchanges"), undefined);
+assert.equal(routePolicyFor("POST", "/api/auth/telegram"), undefined);

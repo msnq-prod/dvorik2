@@ -1,0 +1,174 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]: Д
+      - generic [ref=e7]:
+        - strong [ref=e8]: Dvorik
+        - generic [ref=e9]: Store WebApp
+    - navigation [ref=e10]:
+      - generic [ref=e11]:
+        - generic [ref=e12]: Старт
+        - button "Главное меню Быстрые действия" [ref=e13] [cursor=pointer]:
+          - generic [ref=e17]:
+            - strong [ref=e18]: Главное меню
+            - generic [ref=e19]: Быстрые действия
+      - generic [ref=e45]:
+        - generic [ref=e46]: Каталог
+        - button "Товары Справочник и идентификаторы" [ref=e47] [cursor=pointer]:
+          - generic [ref=e58]:
+            - strong [ref=e59]: Товары
+            - generic [ref=e60]: Справочник и идентификаторы
+      - generic [ref=e61]:
+        - generic [ref=e62]: Склад
+        - button "Склад Остатки и движения" [ref=e63] [cursor=pointer]:
+          - generic [ref=e68]:
+            - strong [ref=e69]: Склад
+            - generic [ref=e70]: Остатки и движения
+        - button "Проверка Остатки по точке" [ref=e71] [cursor=pointer]:
+          - generic [ref=e76]:
+            - strong [ref=e77]: Проверка
+            - generic [ref=e78]: Остатки по точке
+        - button "Маркировки Этикетки и PDF" [ref=e79] [cursor=pointer]:
+          - generic [ref=e84]:
+            - strong [ref=e85]: Маркировки
+            - generic [ref=e86]: Этикетки и PDF
+      - generic [ref=e20]:
+        - generic [ref=e21]: Команда
+        - button "График Смены и обмены" [ref=e22] [cursor=pointer]:
+          - generic [ref=e25]:
+            - strong [ref=e26]: График
+            - generic [ref=e27]: Смены и обмены
+        - button "Пользователи Роли и доступы" [ref=e87] [cursor=pointer]:
+          - generic [ref=e93]:
+            - strong [ref=e94]: Пользователи
+            - generic [ref=e95]: Роли и доступы
+      - generic [ref=e96]:
+        - generic [ref=e97]: Контроль
+        - button "Отчёты Остатки и движения" [ref=e98] [cursor=pointer]:
+          - generic [ref=e102]:
+            - strong [ref=e103]: Отчёты
+            - generic [ref=e104]: Остатки и движения
+        - button "Аудит Журнал и копии" [ref=e105] [cursor=pointer]:
+          - generic [ref=e108]:
+            - strong [ref=e109]: Аудит
+            - generic [ref=e110]: Журнал и копии
+  - main [ref=e28]:
+    - generic [ref=e29]:
+      - heading "Товары" [level=1] [ref=e214]
+      - generic [ref=e33]:
+        - generic "Auth mode" [ref=e111]:
+          - button "Demo" [ref=e112] [cursor=pointer]
+          - button "TG Test" [ref=e113] [cursor=pointer]
+        - combobox [ref=e114]:
+          - option "Анна Владелец, super_admin"
+          - option "Олег Админ, admin" [selected]
+          - option "Маша Продавец, seller"
+          - option "Игорь Блок, seller"
+          - option "Webhook , seller"
+        - button "Тема" [ref=e34] [cursor=pointer]
+        - button "Плотность" [ref=e37] [cursor=pointer]: A−
+        - button "Выход" [ref=e38] [cursor=pointer]
+    - generic [ref=e215]:
+      - generic [ref=e216]:
+        - generic [ref=e217]:
+          - heading "Товары" [level=1] [ref=e218]
+          - paragraph [ref=e219]: Каталог, идентификаторы, статусы и пороги остатков.
+        - button "Создать товар" [ref=e221] [cursor=pointer]
+      - generic [ref=e222]:
+        - generic [ref=e223]:
+          - text: Показано
+          - strong [ref=e224]: "3"
+          - text: из 3
+        - generic [ref=e225]:
+          - text: Активные
+          - strong [ref=e226]: "3"
+        - generic [ref=e227]:
+          - text: Без штрихкода
+          - strong [ref=e228]: "1"
+        - generic [ref=e229]:
+          - text: Категории
+          - strong [ref=e230]: "3"
+      - generic [ref=e231]:
+        - heading "Каталог" [level=2] [ref=e234]
+        - generic [ref=e235]:
+          - textbox [ref=e237]:
+            - /placeholder: Поиск по названию, SKU, штрихкоду
+          - combobox [ref=e238]:
+            - option "Все статусы" [selected]
+            - option "Активные"
+            - option "Архив"
+            - option "Удаленные"
+          - button "Найти" [ref=e239] [cursor=pointer]
+        - table [ref=e241]:
+          - rowgroup [ref=e242]:
+            - row [ref=e243]:
+              - columnheader "Товар" [ref=e244]
+              - columnheader "Официально" [ref=e245]
+              - columnheader "Категория" [ref=e246]
+              - columnheader "Ед." [ref=e247]
+              - columnheader "SKU / barcode" [ref=e248]
+              - columnheader "Порог" [ref=e249]
+              - columnheader "Статус" [ref=e250]
+              - columnheader "Действия" [ref=e251]
+          - rowgroup [ref=e252]:
+            - row [ref=e253]:
+              - cell [ref=e254]:
+                - button "Ассорти" [active] [ref=e255] [cursor=pointer]
+              - cell "Мармелад ассорти" [ref=e256]
+              - cell "Весовой товар" [ref=e257]
+              - cell "кг" [ref=e258]
+              - 'cell "supplier_article: A-100 · barcode: 4601234567890" [ref=e259]'
+              - cell "5" [ref=e260]
+              - cell "Активен" [ref=e261]
+              - cell [ref=e263]:
+                - generic [ref=e264]:
+                  - button "Править" [ref=e265] [cursor=pointer]
+                  - button "Архив" [ref=e266] [cursor=pointer]
+            - row [ref=e267]:
+              - cell [ref=e268]:
+                - button "Пастила яблоко" [ref=e269] [cursor=pointer]
+              - cell "Пастила яблочная" [ref=e270]
+              - cell "Штучный товар" [ref=e271]
+              - cell "шт" [ref=e272]
+              - 'cell "supplier_article: A-100 · barcode: 2000000000022" [ref=e273]'
+              - cell "12" [ref=e274]
+              - cell "Активен" [ref=e275]
+              - cell [ref=e277]:
+                - generic [ref=e278]:
+                  - button "Править" [ref=e279] [cursor=pointer]
+                  - button "Архив" [ref=e280] [cursor=pointer]
+            - row [ref=e281]:
+              - cell [ref=e282]:
+                - button "Фигурки" [ref=e283] [cursor=pointer]
+              - cell "Шоколад фигурный" [ref=e284]
+              - cell "Подарки" [ref=e285]
+              - cell "шт" [ref=e286]
+              - 'cell "legacy_article: LEG-77" [ref=e287]'
+              - cell "10" [ref=e288]
+              - cell "Активен" [ref=e289]
+              - cell [ref=e291]:
+                - generic [ref=e292]:
+                  - button "Править" [ref=e293] [cursor=pointer]
+                  - button "Архив" [ref=e294] [cursor=pointer]
+        - generic [ref=e295]:
+          - button "Назад" [disabled] [ref=e296]
+          - generic [ref=e297]: Страница 1, показано 3 из 3
+          - button "Вперед" [disabled] [ref=e298]
+      - generic [ref=e300]:
+        - heading "Детали товара" [level=2] [ref=e303]
+        - generic [ref=e305]:
+          - generic [ref=e306]:
+            - generic [ref=e307]: Название
+            - strong [ref=e308]: Ассорти
+          - generic [ref=e309]:
+            - generic [ref=e310]: Официально
+            - strong [ref=e311]: Мармелад ассорти
+          - generic [ref=e312]:
+            - generic [ref=e313]: Категория
+            - strong [ref=e314]: Весовой товар
+          - generic [ref=e315]:
+            - generic [ref=e316]: Порог
+            - strong [ref=e317]: "5"
+          - generic [ref=e318]:
+            - generic [ref=e319]: Идентификаторы
+            - strong [ref=e320]: "supplier_article: A-100 · barcode: 4601234567890"
