@@ -84,15 +84,15 @@ export function inspectLegacyState(state: AppState): StateMigrationReport {
     if (!users.has(notification.userId)) conflicts.push(`notification ${notification.id}: missing recipient`);
   }
   for (const product of state.products) {
-    try { requireQuantity(product.lowStockThreshold, { unit: product.unit }); } catch { conflicts.push(`product ${product.id}: invalid low stock threshold`); }
+    try { requireQuantity(product.lowStockThreshold, { unit: product.inventoryKind === "weight" ? "шт" : product.unit }); } catch { conflicts.push(`product ${product.id}: invalid low stock threshold`); }
   }
   for (const balance of state.balances) {
     const product = state.products.find((item) => item.id === balance.productId);
-    try { requireQuantity(balance.quantity, { unit: product?.unit }); } catch { conflicts.push(`balance ${balance.productId}/${balance.locationId}: invalid quantity`); }
+    try { requireQuantity(balance.quantity, { unit: product?.inventoryKind === "weight" ? "шт" : product?.unit }); } catch { conflicts.push(`balance ${balance.productId}/${balance.locationId}: invalid quantity`); }
   }
   for (const operation of state.operations) {
     const product = state.products.find((item) => item.id === operation.productId);
-    try { requireQuantity(operation.quantity, { unit: product?.unit, allowZero: false }); } catch { conflicts.push(`operation ${operation.id}: invalid quantity`); }
+    try { requireQuantity(operation.quantity, { unit: product?.inventoryKind === "weight" ? "шт" : product?.unit, allowZero: false }); } catch { conflicts.push(`operation ${operation.id}: invalid quantity`); }
   }
   return { counts, conflicts };
 }
@@ -113,7 +113,7 @@ export function buildNormalizedStateSql(state: AppState, options: Readonly<{
     state.products.flatMap((product) => product.identifiers.map((identifier) => identifier.supplierId))
       .filter((id): id is string => Boolean(id))
   )];
-  const statements: string[] = ["PRAGMA foreign_keys = OFF", "BEGIN IMMEDIATE"];
+  const statements: string[] = ["PRAGMA foreign_keys = OFF", "BEGIN IMMEDIATE", "DROP TRIGGER IF EXISTS product_price_history_immutable_delete"];
   if (options.preserveSessions && !options.preserveIdentity) {
     if (state.users.length) {
       const userList = state.users.map((user) => quote(user.id)).join(", ");
@@ -127,13 +127,13 @@ export function buildNormalizedStateSql(state: AppState, options: Readonly<{
   const tables = [
     ...(options.preserveIdentity ? [] : ["role_permissions", "user_roles"]),
     ...(options.preserveSessions ? [] : ["sessions"]),
-    "product_identifiers", "supplier_skus", "product_aliases", "stock_operations", "inventory_balances", "stock_balances",
+    "product_price_history", "product_packagings", "product_identifiers", "supplier_skus", "product_aliases", "stock_operations", "inventory_balances", "stock_balances",
     "shift_assignments", "shift_swap_requests", "shifts", "schedule_days", "rotation_templates",
     "import_rows", "imports", "merge_jobs", "label_jobs", "notification_preferences", "webapp_notifications",
     ...(options.preserveCommandTables ? [] : ["outbox_messages"]),
     ...(options.preserveSessions ? [] : ["audit_entries"]),
     ...(options.preserveCommandTables ? [] : ["idempotency_keys"]),
-    "products", "suppliers", "locations",
+    "products", "product_groups", "manufacturers", "suppliers", "locations",
     ...(options.preserveIdentity ? [] : ["permissions", "roles", "users"])
   ];
   statements.push(...tables.map((table) => `DELETE FROM ${table}`));
@@ -158,11 +158,15 @@ export function buildNormalizedStateSql(state: AppState, options: Readonly<{
   // into hash-only sessions. Conversion intentionally revokes them by omission.
   statements.push(...state.locations.map((location) => `INSERT INTO locations(id, code, name, type, parent_id, status) VALUES (${quote(location.id)}, ${quote(location.code)}, ${quote(location.name)}, ${quote(location.type)}, ${quote(location.parentId)}, ${quote(location.status)})`));
   statements.push(...supplierIds.map((id) => `INSERT INTO suppliers(id, name) VALUES (${quote(id)}, ${quote(`Legacy supplier ${id}`)})`));
-  statements.push(...state.products.map((product) => `INSERT INTO products(id, official_name, local_name, unit, photo_url, category, tags_json, status, low_stock_threshold, low_stock_threshold_minor) VALUES (${quote(product.id)}, ${quote(product.officialName)}, ${quote(product.localName)}, ${quote(product.unit)}, ${quote(product.photoUrl)}, ${quote(product.category)}, ${json(product.tags)}, ${quote(product.status)}, ${product.lowStockThreshold}, ${quantityToMinor(product.lowStockThreshold, product.unit)})`));
+  statements.push(...(state.productGroups || []).map((group) => `INSERT INTO product_groups(id,name,inventory_kind,status,created_at,updated_at,version) VALUES (${quote(group.id)},${quote(group.name)},${quote(group.inventoryKind)},${quote(group.status)},datetime('now'),datetime('now'),${group.version})`));
+  statements.push(...(state.manufacturers || []).map((manufacturer) => `INSERT INTO manufacturers(id,name,status,created_at,updated_at,version) VALUES (${quote(manufacturer.id)},${quote(manufacturer.name)},${quote(manufacturer.status)},datetime('now'),datetime('now'),${manufacturer.version})`));
+  statements.push(...state.products.map((product) => { const quantityUnit = product.inventoryKind === "weight" ? "шт" : product.unit; return `INSERT INTO products(id, official_name, local_name, unit, photo_url, category, tags_json, status, low_stock_threshold, low_stock_threshold_minor, group_id, manufacturer_id, inventory_kind, package_mass_grams, article) VALUES (${quote(product.id)}, ${quote(product.officialName)}, ${quote(product.localName)}, ${quote(product.unit)}, ${quote(product.photoUrl)}, ${quote(product.category)}, ${json(product.tags)}, ${quote(product.status)}, ${product.lowStockThreshold}, ${quantityToMinor(product.lowStockThreshold, quantityUnit)}, ${quote(product.groupId)}, ${quote(product.manufacturerId)}, ${quote(product.inventoryKind || "piece")}, ${product.packageMassGrams || "NULL"}, ${quote(product.article || "")})`; }));
+  statements.push(...(state.packagings || []).map((packaging) => `INSERT INTO product_packagings(id,product_id,name,units_per_package,mass_grams,is_primary,created_at,updated_at,version) VALUES (${quote(packaging.id)},${quote(packaging.productId)},${quote(packaging.name)},${packaging.unitsPerPackage},${packaging.massGrams || "NULL"},${packaging.isPrimary ? 1 : 0},datetime('now'),datetime('now'),${packaging.version})`));
+  statements.push(...(state.priceHistory || []).map((price) => `INSERT INTO product_price_history(id,group_id,product_id,price_kopecks,price_unit,effective_from,created_by_user_id,created_at) VALUES (${quote(price.id)},${quote(price.groupId)},${quote(price.productId)},${price.priceKopecks},${quote(price.priceUnit)},${quote(price.effectiveFrom)},${quote(price.createdByUserId && userIds.has(price.createdByUserId) ? price.createdByUserId : undefined)},${quote(price.createdAt)})`));
   statements.push(...state.products.flatMap((product) => product.identifiers.map((identifier) => `INSERT INTO product_identifiers(id, product_id, supplier_id, type, value, normalized_value) VALUES (${quote(identifier.id)}, ${quote(product.id)}, ${quote(identifier.supplierId)}, ${quote(identifier.type)}, ${quote(identifier.value)}, ${quote(normalize(identifier.value))})`)));
-  statements.push(...state.balances.map((balance) => { const product = state.products.find((item) => item.id === balance.productId); return `INSERT INTO stock_balances(product_id, location_id, quantity, quantity_minor, version) VALUES (${quote(balance.productId)}, ${quote(balance.locationId)}, ${balance.quantity}, ${quantityToMinor(balance.quantity, product?.unit)}, ${balance.version})`; }));
+  statements.push(...state.balances.map((balance) => { const product = state.products.find((item) => item.id === balance.productId); const unit = product?.inventoryKind === "weight" ? "шт" : product?.unit; return `INSERT INTO stock_balances(product_id, location_id, quantity, quantity_minor, version) VALUES (${quote(balance.productId)}, ${quote(balance.locationId)}, ${balance.quantity}, ${quantityToMinor(balance.quantity, unit)}, ${balance.version})`; }));
   statements.push("INSERT OR IGNORE INTO inventory_balances(product_id, quantity_minor, version, updated_at) SELECT id, 0, 0, datetime('now') FROM products");
-  statements.push(...state.operations.map((operation) => { const product = state.products.find((item) => item.id === operation.productId); return `INSERT INTO stock_operations(id, type, product_id, from_location_id, to_location_id, quantity, quantity_minor, actor_id, reason, idempotency_key, reversed_operation_id, metadata_json, created_at) VALUES (${quote(operation.id)}, ${quote(operation.type)}, ${quote(operation.productId)}, ${quote(operation.fromLocationId)}, ${quote(operation.toLocationId)}, ${operation.quantity}, ${quantityToMinor(operation.quantity, product?.unit)}, ${quote(operation.actorId)}, ${quote(operation.reason)}, ${quote(operation.idempotencyKey)}, ${quote(operation.reversedOperationId)}, ${json(operation.metadata || {})}, ${quote(operation.createdAt)})`; }));
+  statements.push(...state.operations.map((operation) => { const product = state.products.find((item) => item.id === operation.productId); const unit = product?.inventoryKind === "weight" ? "шт" : product?.unit; return `INSERT INTO stock_operations(id, type, product_id, from_location_id, to_location_id, quantity, quantity_minor, actor_id, reason, idempotency_key, reversed_operation_id, metadata_json, created_at) VALUES (${quote(operation.id)}, ${quote(operation.type)}, ${quote(operation.productId)}, ${quote(operation.fromLocationId)}, ${quote(operation.toLocationId)}, ${operation.quantity}, ${quantityToMinor(operation.quantity, unit)}, ${quote(operation.actorId)}, ${quote(operation.reason)}, ${quote(operation.idempotencyKey)}, ${quote(operation.reversedOperationId)}, ${json(operation.metadata || {})}, ${quote(operation.createdAt)})`; }));
   const derivedDays = state.shifts.map((shift) => ({ id: dayId(shift.date, shift.locationId), date: shift.date, locationId: shift.locationId, status: "working" as const, comment: "", version: 0 }));
   const daysByKey = new Map([...derivedDays, ...state.scheduleDays].map((day) => [`${day.date}:${day.locationId}`, day]));
   const days = [...daysByKey.values()];
@@ -189,6 +193,6 @@ export function buildNormalizedStateSql(state: AppState, options: Readonly<{
     const idempotencyKey = separator < 0 ? key : key.slice(separator + 1);
     return `INSERT INTO idempotency_keys(scope, key, request_hash, status, response_status, response_json, created_at, completed_at, updated_at) VALUES (${quote(scope)}, ${quote(idempotencyKey)}, ${quote(`legacy:${key}`)}, 'completed', 200, ${json(response)}, datetime('now'), datetime('now'), datetime('now'))${options.preserveCommandTables ? " ON CONFLICT DO NOTHING" : ""}`;
   }));
-  statements.push("COMMIT", "PRAGMA foreign_keys = ON");
+  statements.push("CREATE TRIGGER product_price_history_immutable_delete BEFORE DELETE ON product_price_history BEGIN SELECT RAISE(ABORT, 'price history is immutable'); END", "COMMIT", "PRAGMA foreign_keys = ON");
   return statements.join(";\n");
 }

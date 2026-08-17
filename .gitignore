@@ -1,0 +1,14 @@
+.DS_Store
+.pytest_cache/
+
+gpt-version/node_modules/
+gpt-version/dist/
+gpt-version/backups/
+gpt-version/.playwright-cli/
+gpt-version/output/
+gpt-version/test-results/
+gpt-version/data/*.sqlite
+gpt-version/data/*.sqlite-*
+gpt-version/data/*.sqlite-shm
+gpt-version/data/*.sqlite-wal
+gpt-version/data/dvorik-state.json

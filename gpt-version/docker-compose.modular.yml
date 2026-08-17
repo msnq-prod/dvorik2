@@ -1,0 +1,58 @@
+services:
+  core:
+    build: .
+    command: ["sh", "-c", "mkdir -p /data/media /data/backups && npm start"]
+    env_file: ${DVORIK_ENV_FILE:-.env.modular}
+    environment:
+      DVORIK_SQLITE_FILE: /data/core.sqlite
+      DVORIK_MEDIA_DIR: /data/media
+      DVORIK_BACKUP_DIR: /data/backups
+      DVORIK_CASH_MODE: disabled
+      DVORIK_STAFF_MODE: external
+      DVORIK_STAFF_BASE_URL: http://staff:3202
+      DVORIK_WAREHOUSE_MODE: external
+      DVORIK_WAREHOUSE_BASE_URL: http://warehouse:3303
+    volumes: ["core-data:/data"]
+    ports: ["3001:3001"]
+    depends_on: [warehouse, staff]
+
+  warehouse:
+    build: .
+    command: ["sh", "-c", "test -f /data/warehouse.sqlite || cp /seed/warehouse.sqlite /data/warehouse.sqlite; npm run start:warehouse"]
+    env_file: ${DVORIK_ENV_FILE:-.env.modular}
+    environment:
+      DVORIK_WAREHOUSE_SQLITE_FILE: /data/warehouse.sqlite
+      DVORIK_CORE_BASE_URL: http://core:3001
+      WAREHOUSE_PORT: 3303
+    volumes: ["warehouse-data:/data"]
+
+  staff:
+    build: .
+    command: ["npm", "run", "start:staff"]
+    env_file: ${DVORIK_ENV_FILE:-.env.modular}
+    environment:
+      DVORIK_STAFF_SQLITE_FILE: /data/staff.sqlite
+      DVORIK_CORE_BASE_URL: http://core:3001
+      STAFF_PORT: 3202
+    volumes: ["staff-data:/data"]
+
+  company-worker:
+    build: .
+    command: ["sh", "-c", "mkdir -p /data/media /data/backups && npm run worker:company"]
+    env_file: ${DVORIK_ENV_FILE:-.env.modular}
+    environment:
+      DVORIK_SQLITE_FILE: /data/core.sqlite
+      DVORIK_MEDIA_DIR: /data/media
+      DVORIK_BACKUP_DIR: /data/backups
+      DVORIK_CASH_MODE: disabled
+      DVORIK_STAFF_MODE: external
+      DVORIK_STAFF_BASE_URL: http://staff:3202
+      DVORIK_WAREHOUSE_MODE: external
+      DVORIK_WAREHOUSE_BASE_URL: http://warehouse:3303
+    volumes: ["core-data:/data"]
+    depends_on: [core]
+
+volumes:
+  core-data:
+  warehouse-data:
+  staff-data:

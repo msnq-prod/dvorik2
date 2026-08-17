@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Product, ProductMerge } from "../../../shared/types";
+import type { Location, Product, ProductMerge } from "../../../shared/types";
 import type { PageProps } from "../appTypes";
 import { mergeStatusLabels, productStatusLabels } from "../constants";
+import { formatProductQuantity } from "../presentation";
 import { DataTable, Field, Notice, PageHeader, Panel, Skeleton, StatusBadge, Toolbar, formatDateTime, useConfirm } from "../ui";
 
 type CandidateGroup = { key: string; score: number; explanation: string; productIds: string[] };
@@ -10,6 +11,7 @@ const resolutionFields: Array<keyof FieldResolution> = ["officialName", "localNa
 
 export function MergePage({ client, session }: PageProps) {
   const [products, setProducts] = useState<Product[]>([]);
+  const [locations, setLocations] = useState<Location[]>([]);
   const [sourceProductId, setSourceProductId] = useState("p-2");
   const [targetProductId, setTargetProductId] = useState("p-1");
   const [merge, setMerge] = useState<ProductMerge | null>(null);
@@ -20,6 +22,7 @@ export function MergePage({ client, session }: PageProps) {
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [message, setMessage] = useState("");
+  const [warehouseMode, setWarehouseMode] = useState(false);
   const canMerge = session.permissions.includes("merge:write");
   const { confirm, confirmDialog } = useConfirm();
 
@@ -27,14 +30,18 @@ export function MergePage({ client, session }: PageProps) {
     setLoading(true);
     setMessage("");
     try {
-      const [nextProducts, nextMerges, nextCandidates] = await Promise.all([
+      const capabilities = await client.request<{ warehouseWriteMode: "legacy" | "fifo" }>("/api/runtime/capabilities");
+      if (capabilities.warehouseWriteMode === "fifo") { setWarehouseMode(true); return; }
+      const [nextProducts, nextMerges, nextCandidates, nextLocations] = await Promise.all([
         client.request<{ items: Product[] }>("/api/products?status=all&limit=100"),
         client.request<ProductMerge[]>("/api/merges"),
-        client.request<CandidateGroup[]>("/api/merges/candidates")
+        client.request<CandidateGroup[]>("/api/merges/candidates"),
+        client.request<Location[]>("/api/locations")
       ]);
       setProducts(nextProducts.items);
       setMerges(nextMerges);
       setCandidates(nextCandidates);
+      setLocations(nextLocations);
     } catch (err) {
       setMessage((err as Error).message);
     } finally {
@@ -111,6 +118,7 @@ export function MergePage({ client, session }: PageProps) {
   };
 
   if (loading) return <Skeleton />;
+  if (warehouseMode) return <section className="stack"><PageHeader title="Дубли" description="Недоступны в FIFO-режиме." /><Notice>Объединение legacy-каталога не меняет Warehouse и поэтому отключено.</Notice></section>;
 
   return (
     <>
@@ -161,9 +169,9 @@ export function MergePage({ client, session }: PageProps) {
                 rows={merge.snapshot.balances}
                 empty="Остатков исходного товара нет"
                 columns={[
-                  { key: "product", header: "Товар", render: (row) => row.productId },
-                  { key: "location", header: "Локация", render: (row) => row.locationId },
-                  { key: "qty", header: "Остаток", render: (row) => row.quantity }
+                  { key: "product", header: "Товар", render: (row) => productName(row.productId, products) },
+                  { key: "location", header: "Локация", render: (row) => locations.find((item) => item.id === row.locationId)?.name || "Точка неизвестна" },
+                  { key: "qty", header: "Остаток", render: (row) => formatProductQuantity(products.find((item) => item.id === row.productId), row.quantity) }
                 ]}
               />
               <Notice>Будет перепривязано операций: {merge.snapshot.operations?.length || 0}</Notice>

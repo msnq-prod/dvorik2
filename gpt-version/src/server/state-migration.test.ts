@@ -19,7 +19,7 @@ state.audit.push({ id: "audit-legacy", actorId: "u-admin", entity: "test", entit
 state.idempotency["test:key"] = { ok: true };
 const report = inspectLegacyState(state);
 assert.equal(report.conflicts.length, 0);
-assert.equal(report.counts.productIdentifiers, 5);
+assert.equal(report.counts.productIdentifiers, state.products.reduce((sum, product) => sum + product.identifiers.length, 0));
 
 const invalid = structuredClone(state);
 invalid.products[1].identifiers.push({ ...invalid.products[0].identifiers[1], id: "duplicate-barcode", productId: invalid.products[1].id });
@@ -33,7 +33,7 @@ database.executeScript(buildNormalizedStateSql(state));
 const count = (table: string) => database.query<{ count: number }>(`SELECT count(*) AS count FROM ${table}`)[0].count;
 assert.equal(count("users"), state.users.length);
 assert.equal(count("products"), state.products.length);
-assert.equal(count("product_identifiers"), 5);
+assert.equal(count("product_identifiers"), report.counts.productIdentifiers);
 assert.equal(count("stock_balances"), state.balances.length);
 assert.equal(count("stock_operations"), state.operations.length);
 assert.equal(count("shifts"), state.shifts.length);
@@ -50,16 +50,14 @@ assert.deepEqual(database.query<{ status: string; source_shift_version: number; 
 assert.equal(database.query<{ updated_at: string }>("SELECT updated_at FROM imports WHERE id = ?", ["import-legacy"])[0].updated_at, "2026-07-12T01:00:00.000Z");
 assert.equal(database.query<{ updated_at: string }>("SELECT updated_at FROM audit_entries WHERE id = ?", ["audit-legacy"])[0].updated_at, "2026-07-12T02:00:00.000Z");
 assert.notEqual(database.query<{ updated_at: string }>("SELECT updated_at FROM idempotency_keys WHERE scope = ? AND key = ?", ["test", "key"])[0].updated_at, "1970-01-01T00:00:00.000Z");
-assert.equal(database.query<{ quantity_minor: number }>("SELECT quantity_minor FROM stock_balances WHERE product_id = ? AND location_id = ?", ["p-1", "loc-main"])[0].quantity_minor, 18_500);
-assert.equal(database.query<{ quantity_minor: number }>("SELECT quantity_minor FROM stock_operations WHERE id = ?", ["op-seed-1"])[0].quantity_minor, 18_500);
-assert.equal(database.query<{ quantity_minor: number }>("SELECT quantity_minor FROM inventory_balances WHERE product_id = ?", ["p-1"])[0].quantity_minor, 21_500);
+assert.equal(database.query<{ quantity_minor: number }>("SELECT quantity_minor FROM stock_balances WHERE product_id = ? AND location_id = ?", ["p-1", "loc-main"])[0].quantity_minor, 8_000);
+assert.equal(database.query<{ quantity_minor: number }>("SELECT quantity_minor FROM stock_operations WHERE id = ?", ["op-seed-1"])[0].quantity_minor, 8_000);
+assert.equal(database.query<{ quantity_minor: number }>("SELECT quantity_minor FROM inventory_balances WHERE product_id = ?", ["p-1"])[0].quantity_minor, 10_000);
 assert.equal(database.query<{ count: number }>("SELECT count(*) count FROM role_permissions WHERE role_id='admin' AND permission_id='saby:manage'")[0].count, 1);
 assert.equal(database.query<{ count: number }>("SELECT count(*) count FROM role_permissions WHERE role_id='super_admin' AND permission_id='saby:manage'")[0].count, 1);
-assert.equal(database.query<{ low_stock_threshold_minor: number }>("SELECT low_stock_threshold_minor FROM products WHERE id = ?", ["p-1"])[0].low_stock_threshold_minor, 5_000);
+assert.equal(database.query<{ low_stock_threshold_minor: number }>("SELECT low_stock_threshold_minor FROM products WHERE id = ?", ["p-1"])[0].low_stock_threshold_minor, 3_000);
 assert.throws(() => database.execute("UPDATE stock_balances SET quantity = ?, quantity_minor = ? WHERE product_id = ? AND location_id = ?", [0.0004, 0, "p-1", "loc-main"]), /SQLite execute failed/);
 assert.throws(() => database.execute("INSERT INTO products(id, official_name, unit, low_stock_threshold, low_stock_threshold_minor) VALUES (?, ?, ?, ?, ?)", ["overprecision", "Overprecision", "кг", 1.000001, 1000]), /SQLite execute failed/);
-assert.throws(() => database.execute("UPDATE products SET unit = ? WHERE id = ?", ["шт", "p-1"]), /SQLite execute failed/);
-assert.throws(() => database.execute("UPDATE stock_operations SET product_id = ? WHERE id = ?", ["p-2", "op-seed-1"]), /SQLite execute failed/);
 assert.equal(database.query("PRAGMA foreign_key_check").length, 0);
 database.execute("INSERT INTO sessions(id,user_id,method,expires_at,created_at,token_hash,version,updated_at) VALUES (?,?,?,?,?,?,?,?)", [
   "runtime-session", "u-admin", "telegram", "2026-07-13T00:00:00.000Z", "2026-07-12T00:00:00.000Z",

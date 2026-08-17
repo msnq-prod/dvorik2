@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Location, ScheduleDay, Shift, ShiftExchangeRequest, User } from "../../../shared/types";
 import type { PageProps } from "../appTypes";
 import { shiftStatusLabels } from "../constants";
-import { EmptyState, Field, Notice, Panel, Skeleton, useConfirm } from "../ui";
+import { ActionMenu, EmptyState, Field, Notice, Panel, Skeleton, useConfirm } from "../ui";
 
 type ShiftForm = {
   date: string;
@@ -10,6 +10,8 @@ type ShiftForm = {
   employeeId: string;
   status: Shift["status"];
   comment: string;
+  start: string;
+  end: string;
 };
 
 type RotationPreview = {
@@ -39,7 +41,7 @@ export function SwapShiftSelector({ shifts, userId, users, locations, value, onC
   </Field>;
 }
 
-export function SchedulePage({ client, session }: PageProps) {
+export function SchedulePage({ client, session, intent, onIntentHandled }: PageProps) {
   const deferredScheduleToolsEnabled = false;
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [scheduleDays, setScheduleDays] = useState<ScheduleDay[]>([]);
@@ -52,7 +54,7 @@ export function SchedulePage({ client, session }: PageProps) {
   const [locationFilter, setLocationFilter] = useState("all");
   const [employeeFilter, setEmployeeFilter] = useState("all");
   const [editingId, setEditingId] = useState("");
-  const [shiftForm, setShiftForm] = useState<ShiftForm>({ date: today, locationId: "loc-counter", employeeId: "u-seller", status: "scheduled", comment: "" });
+  const [shiftForm, setShiftForm] = useState<ShiftForm>({ date: today, locationId: "loc-counter", employeeId: "u-seller", status: "scheduled", comment: "", start: "10:00", end: "21:00" });
   const [swapForm, setSwapForm] = useState({ fromShiftId: "", toShiftId: "" });
   const [showShiftForm, setShowShiftForm] = useState(false);
   const [showSwapForm, setShowSwapForm] = useState(false);
@@ -104,6 +106,16 @@ export function SchedulePage({ client, session }: PageProps) {
   useEffect(() => {
     void load();
   }, [client]);
+
+  useEffect(() => {
+    if (typeof intent !== "string" || !intent.startsWith("schedule-date:")) return;
+    const date = intent.slice("schedule-date:".length);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      setFocusDate(date);
+      setSelectedDate(date);
+    }
+    onIntentHandled?.();
+  }, [intent, onIntentHandled]);
 
   useEffect(() => {
     if (selectedDate.slice(0, 7) !== focusDate.slice(0, 7)) {
@@ -159,16 +171,16 @@ export function SchedulePage({ client, session }: PageProps) {
     setMessage("");
     const payload = {
       ...shiftForm,
-      start: "10:00",
-      end: "21:00",
+      start: shiftForm.start,
+      end: shiftForm.end,
       employeeIds: [shiftForm.employeeId]
     };
     try {
       if (editingId) {
-        await client.request(`/api/schedule/${editingId}`, { method: "PATCH", body: JSON.stringify(payload) });
+        await client.request(`/api/schedule/${editingId}`, { method: "PATCH", headers: { "idempotency-key": crypto.randomUUID() }, body: JSON.stringify(payload) });
         setMessage("Смена обновлена");
       } else {
-        await client.request("/api/schedule", { method: "POST", body: JSON.stringify(payload) });
+        await client.request("/api/schedule", { method: "POST", headers: { "idempotency-key": crypto.randomUUID() }, body: JSON.stringify(payload) });
         setMessage("Смена создана");
       }
       setEditingId("");
@@ -187,7 +199,7 @@ export function SchedulePage({ client, session }: PageProps) {
     setWorking(true);
     setMessage("");
     try {
-      await client.request("/api/schedule/exchanges", { method: "POST", body: JSON.stringify(swapForm) });
+      await client.request("/api/schedule/exchanges", { method: "POST", headers: { "idempotency-key": crypto.randomUUID() }, body: JSON.stringify(swapForm) });
       setMessage("Заявка создана");
       setShowSwapForm(false);
       await load();
@@ -208,7 +220,7 @@ export function SchedulePage({ client, session }: PageProps) {
     setWorking(true);
     setMessage("");
     try {
-      await client.request(`/api/schedule/days/${selectedDate}/${locationId}`, { method: "PUT", body: JSON.stringify({ status }) });
+      await client.request(`/api/schedule/days/${selectedDate}/${locationId}`, { method: "PUT", headers: { "idempotency-key": crypto.randomUUID() }, body: JSON.stringify({ status }) });
       setMessage(status === "closed" ? "День закрыт" : "День открыт");
       await load();
     } catch (err) {
@@ -267,7 +279,7 @@ export function SchedulePage({ client, session }: PageProps) {
     setWorking(true);
     setMessage("");
     try {
-      await client.request(`/api/schedule/exchanges/${id}/${action}`, { method: "POST" });
+      await client.request(`/api/schedule/exchanges/${id}/${action}`, { method: "POST", headers: { "idempotency-key": crypto.randomUUID() } });
       setMessage(action === "accept" ? "Обмен принят" : action === "decline" ? "Обмен отклонен" : "Заявка отменена");
       await load();
     } catch (err) {
@@ -285,11 +297,11 @@ export function SchedulePage({ client, session }: PageProps) {
         {canManage && <button onClick={() => openCreateShift()}>Назначить смену</button>}
         {deferredScheduleToolsEnabled && canManage && <button className="secondary" onClick={() => { setShowRotationForm(true); setShowShiftForm(false); setShowSwapForm(false); }}>Сгенерировать график</button>}
         {deferredScheduleToolsEnabled && canManage && <button className="secondary" onClick={() => { setShowReplacementForm(true); setShowShiftForm(false); setShowSwapForm(false); }}>Заменить сотрудника</button>}
-        {canManage && <details className="action-menu export-menu"><summary>Экспорт</summary><div className="action-menu-popover"><button className="secondary" onClick={() => exportSchedule("csv")}>CSV</button><button className="secondary" onClick={() => exportSchedule("pdf")}>PDF</button></div></details>}
+        {canManage && <ActionMenu className="export-menu" label="Экспорт"><button className="secondary" onClick={() => exportSchedule("csv")}>CSV</button><button className="secondary" onClick={() => exportSchedule("pdf")}>PDF</button></ActionMenu>}
         {isSeller && canOfferSwap && <button onClick={() => { setShowSwapForm(true); setShowShiftForm(false); }}>Обменяться</button>}
       </div>
       {message && <Notice tone={message.includes("создан") || message.includes("обнов") || message.includes("принят") || message.includes("отклон") || message.includes("отмен") ? "good" : "danger"}>{message}</Notice>}
-      {isSeller && (nextOwnShift ? <Panel className="next-shift" title="Ближайшая смена"><strong>{formatShortDate(nextOwnShift.date)} · 10:00–21:00</strong><span>{locationName(nextOwnShift.locationId, locations)}</span></Panel> : <EmptyState title="Ближайших смен нет" description="Новые назначения появятся здесь." />)}
+      {isSeller && (nextOwnShift ? <Panel className="next-shift" title="Ближайшая смена"><strong>{formatShortDate(nextOwnShift.date)} · {nextOwnShift.start}–{nextOwnShift.end}</strong><span>{locationName(nextOwnShift.locationId, locations)}</span></Panel> : <EmptyState title="Ближайших смен нет" description="Новые назначения появятся здесь." />)}
 
       {incomingExchanges.length > 0 && (
         <Panel title="Предложения обмена">
@@ -375,13 +387,13 @@ export function SchedulePage({ client, session }: PageProps) {
       </Panel>
 
       <Panel title={`День: ${formatShortDate(selectedDate)}`} description={selectedDayShifts.length ? "Назначения и точки выбранной даты." : "Назначений на выбранную дату нет."}>
-        {selectedDayShifts.length ? selectedDayShifts.map((shift) => <div className="swap-offer" key={shift.id}><div><strong>{locationName(shift.locationId, locations)}</strong><span>{shortUserList(shift.employeeIds, users)} · {shiftStatusLabels[shift.status]}</span>{shift.comment && <span>{shift.comment}</span>}</div>{canManage && <button className="secondary small" onClick={() => { setEditingId(shift.id); setShiftForm({ date: shift.date, locationId: shift.locationId, employeeId: shift.employeeIds[0] || "", status: shift.status, comment: shift.comment }); setShowShiftForm(true); }}>Изменить</button>}</div>) : <EmptyState title={isSeller ? "У вас нет смен в этот день" : "Смен нет"} action={canManage ? <button onClick={() => openCreateShift(selectedDate)}>Назначить смену</button> : undefined} />}
+        {selectedDayShifts.length ? selectedDayShifts.map((shift) => <div className="swap-offer" key={shift.id}><div><strong>{locationName(shift.locationId, locations)} · {shift.start}–{shift.end}</strong><span>{shortUserList(shift.employeeIds, users)} · {shiftStatusLabels[shift.status]}</span>{shift.comment && <span>{shift.comment}</span>}</div>{canManage && <button className="secondary small" onClick={() => { setEditingId(shift.id); setShiftForm({ date: shift.date, locationId: shift.locationId, employeeId: shift.employeeIds[0] || "", status: shift.status, comment: shift.comment, start: shift.start, end: shift.end }); setShowShiftForm(true); }}>Изменить</button>}</div>) : <EmptyState title={isSeller ? "У вас нет смен в этот день" : "Смен нет"} action={canManage ? <button onClick={() => openCreateShift(selectedDate)}>Назначить смену</button> : undefined} />}
       </Panel>
 
       {canManage && locations.length > 0 && (
         <Panel title="Статус дня" description="Закрытие не отменяет назначенные смены: сначала перенесите или отмените их.">
           <div className="inline-actions">
-            <span>{selectedDate} · {locationName(locationFilter === "all" ? locations[0].id : locationFilter, locations)}</span>
+            <span>{formatShortDate(selectedDate)} · {locationName(locationFilter === "all" ? locations[0].id : locationFilter, locations)}</span>
             <button className="secondary" disabled={working} onClick={() => setDayStatus("working")}>Открыть</button>
             <button className="danger" disabled={working} onClick={() => setDayStatus("closed")}>Закрыть</button>
           </div>
@@ -421,6 +433,8 @@ export function SchedulePage({ client, session }: PageProps) {
               </select>
             </Field>
             <Field label="Статус"><select value={shiftForm.status} onChange={(event) => setShiftForm({ ...shiftForm, status: event.target.value as Shift["status"] })}>{Object.entries(shiftStatusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
+            <Field label="Начало"><input type="time" value={shiftForm.start} onChange={(event) => setShiftForm({ ...shiftForm, start: event.target.value })} /></Field>
+            <Field label="Окончание"><input type="time" value={shiftForm.end} onChange={(event) => setShiftForm({ ...shiftForm, end: event.target.value })} /></Field>
             <Field label="Комментарий"><input value={shiftForm.comment} onChange={(event) => setShiftForm({ ...shiftForm, comment: event.target.value })} /></Field>
             <div className="inline-actions">
               <button onClick={createOrUpdateShift} disabled={working || !shiftForm.employeeId}>{editingId ? "Сохранить" : "Назначить"}</button>

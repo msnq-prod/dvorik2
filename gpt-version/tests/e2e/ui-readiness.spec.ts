@@ -97,12 +97,39 @@ test("поиск, первый экран и складская нижняя п�
   const dialog = page.getByRole("dialog", { name: /Действия с товаром/ });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Переместить" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Списать брак" })).toBeDisabled();
+  await dialog.getByLabel("Причина брака").selectOption("damaged");
+  await expect(dialog.getByRole("button", { name: "Списать брак" })).toBeEnabled();
   if (testInfo.project.name.startsWith("mobile")) {
     const dialogBox = await dialog.boundingBox();
-    const navBox = await page.getByRole("navigation", { name: "Основная навигация" }).boundingBox();
-    expect(dialogBox?.y).toBeLessThan(navBox?.y || Infinity);
-    expect((dialogBox?.y || 0) + (dialogBox?.height || 0)).toBeLessThanOrEqual((navBox?.y || 844) + 1);
+    expect(dialogBox?.y).toBe(0);
+    expect(dialogBox?.width).toBe(390);
+    expect((dialogBox?.y || 0) + (dialogBox?.height || 0)).toBeLessThanOrEqual(845);
   }
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expectCleanLayout(page);
+});
+
+test("сканер склада находит товар и обрабатывает неизвестный код", async ({ page }) => {
+  await login(page, "u-seller", "stock", "Склад");
+  await expect(page.getByTestId("barcode-scanner")).toBeVisible();
+
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("dvorik:barcode-scan", { detail: "9999999999999" })));
+  await expect(page.getByText("Неизвестный штрихкод")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Создать товар" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Выбрать существующий" })).toBeVisible();
+  await page.getByRole("button", { name: "Отмена" }).click();
+
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("dvorik:barcode-scan", { detail: "4601234567890" })));
+  const scannedCard = page.getByTestId("scanned-product-card");
+  await expect(scannedCard).toContainText("Ассорти");
+  await expect(scannedCard).toContainText("Общий остаток");
+  const transfer = scannedCard.getByRole("button", { name: "Переместить" });
+  if (await transfer.isEnabled()) await transfer.click();
+  else await scannedCard.getByRole("button", { name: "Брак" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expectCleanLayout(page);
@@ -122,10 +149,13 @@ test("ошибка API доступна, опасный диалог управ�
 
   await login(page, "u-super", "users", "Пользователи");
   const activeUserRow = page.locator("tbody tr").filter({ hasText: "Активен" }).first();
-  await activeUserRow.locator("details.action-menu summary").click();
+  await activeUserRow.locator("button.link-button").click();
+  const employeeDrawer = page.getByRole("dialog").filter({ has: page.locator(".permission-tags") });
+  await expect(employeeDrawer).toBeVisible();
+  await employeeDrawer.locator("details.action-menu summary").click();
   const dangerous = page.getByRole("button", { name: "Заблокировать", exact: true }).first();
   await dangerous.click();
-  const dialog = page.getByRole("dialog");
+  const dialog = page.getByRole("dialog", { name: "Изменить пользователя?" });
   await expect(dialog).toBeVisible();
   await expect(page.getByRole("button", { name: "Отмена" })).toBeFocused();
   await page.keyboard.press("Escape");

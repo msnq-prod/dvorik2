@@ -13,20 +13,64 @@ export type RuntimeConfig = {
   timezone: string;
   telegramBotToken: string;
   telegramWebhookSecret: string;
-  saby?: {
-    pointId: number;
-    appClientId: string;
-    appSecret: string;
-    secretKey: string;
-    webhookSecret: string;
-    authUrl: string;
-    apiBaseUrl: string;
-    overlapMinutes: number;
-    initialLookbackHours: number;
+  cash: {
+    mode: "disabled" | "external";
+    baseUrl?: string;
+    internalSecret?: string;
   };
+  staff: {
+    mode: "disabled" | "external";
+    baseUrl?: string;
+    internalSecret?: string;
+  };
+  warehouse:
+    | { mode: "embedded"; databaseFile?: string }
+    | { mode: "external"; baseUrl: string; internalSecret: string };
   objectStorage?: { endpoint: string; bucket: string; publicBaseUrl: string; token: string };
   sessionCookie: { name: string; secret: string; secure: boolean; sameSite: "lax"; maxAgeMs: number };
 };
+
+function cashConfig(env: Env): RuntimeConfig["cash"] {
+  const mode = env.DVORIK_CASH_MODE === "external" ? "external" : "disabled";
+  if (mode === "disabled") return { mode };
+  const baseUrl = required(env, "DVORIK_CASH_BASE_URL");
+  try {
+    const parsed = new URL(baseUrl);
+    if (!["http:", "https:"].includes(parsed.protocol)) throw new Error();
+  } catch {
+    throw new Error("DVORIK_CASH_BASE_URL must be an HTTP(S) URL");
+  }
+  const internalSecret = required(env, "DVORIK_INTERNAL_SECRET");
+  if (Buffer.byteLength(internalSecret, "utf8") < 32) throw new Error("DVORIK_INTERNAL_SECRET must be at least 32 bytes");
+  return { mode, baseUrl: baseUrl.replace(/\/$/, ""), internalSecret };
+}
+
+function staffConfig(env: Env): RuntimeConfig["staff"] {
+  const mode = env.DVORIK_STAFF_MODE === "external" ? "external" : "disabled";
+  if (mode === "disabled") return { mode };
+  const baseUrl = required(env, "DVORIK_STAFF_BASE_URL");
+  try { const parsed = new URL(baseUrl); if (!["http:", "https:"].includes(parsed.protocol)) throw new Error(); } catch { throw new Error("DVORIK_STAFF_BASE_URL must be an HTTP(S) URL"); }
+  const internalSecret = required(env, "DVORIK_INTERNAL_SECRET");
+  if (Buffer.byteLength(internalSecret, "utf8") < 32) throw new Error("DVORIK_INTERNAL_SECRET must be at least 32 bytes");
+  return { mode, baseUrl: baseUrl.replace(/\/$/, ""), internalSecret };
+}
+
+function warehouseConfig(env: Env): RuntimeConfig["warehouse"] {
+  const mode = env.DVORIK_WAREHOUSE_MODE === "external" ? "external" : "embedded";
+  if (mode === "embedded") {
+    const configuredFile = env.DVORIK_WAREHOUSE_SQLITE_FILE?.trim();
+    if (configuredFile && !path.isAbsolute(configuredFile)) throw new Error("DVORIK_WAREHOUSE_SQLITE_FILE must be an absolute path");
+    return {
+      mode,
+      databaseFile: configuredFile || (env.NODE_ENV === "test" ? undefined : path.resolve(process.cwd(), "data/warehouse.sqlite"))
+    };
+  }
+  const baseUrl = required(env, "DVORIK_WAREHOUSE_BASE_URL");
+  try { const parsed = new URL(baseUrl); if (!["http:", "https:"].includes(parsed.protocol)) throw new Error(); } catch { throw new Error("DVORIK_WAREHOUSE_BASE_URL must be an HTTP(S) URL"); }
+  const internalSecret = required(env, "DVORIK_INTERNAL_SECRET");
+  if (Buffer.byteLength(internalSecret, "utf8") < 32) throw new Error("DVORIK_INTERNAL_SECRET must be at least 32 bytes");
+  return { mode, baseUrl: baseUrl.replace(/\/$/, ""), internalSecret };
+}
 
 function positiveInteger(env: Env, name: string, fallback?: number) {
   const raw = env[name]?.trim();
@@ -34,30 +78,6 @@ function positiveInteger(env: Env, name: string, fallback?: number) {
   const value = Number(raw);
   if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
   return value;
-}
-
-function httpsUrl(env: Env, name: string, fallback: string) {
-  const value = env[name]?.trim() || fallback;
-  try { if (new URL(value).protocol !== "https:") throw new Error(); } catch { throw new Error(`${name} must be an HTTPS URL`); }
-  return value.replace(/\/$/, "");
-}
-
-function sabyConfig(env: Env) {
-  if (env.DVORIK_SABY_ENABLED !== "1") return undefined;
-  const webhookSecret = required(env, "DVORIK_SABY_WEBHOOK_SECRET");
-  if (Buffer.byteLength(webhookSecret, "utf8") < 32) throw new Error("DVORIK_SABY_WEBHOOK_SECRET must be at least 32 bytes");
-  if (!/^[A-Za-z0-9_-]+$/.test(webhookSecret)) throw new Error("DVORIK_SABY_WEBHOOK_SECRET must be URL-safe");
-  return {
-    pointId: positiveInteger(env, "DVORIK_SABY_POINT_ID"),
-    appClientId: required(env, "DVORIK_SABY_APP_CLIENT_ID"),
-    appSecret: required(env, "DVORIK_SABY_APP_SECRET"),
-    secretKey: required(env, "DVORIK_SABY_SECRET_KEY"),
-    webhookSecret,
-    authUrl: httpsUrl(env, "DVORIK_SABY_AUTH_URL", "https://online.sbis.ru/oauth/service/"),
-    apiBaseUrl: httpsUrl(env, "DVORIK_SABY_API_BASE_URL", "https://api.sbis.ru"),
-    overlapMinutes: positiveInteger(env, "DVORIK_SABY_OVERLAP_MINUTES", 30),
-    initialLookbackHours: positiveInteger(env, "DVORIK_SABY_INITIAL_LOOKBACK_HOURS", 24)
-  } as const;
 }
 
 const devTokens = new Set(["dev-token", "test-token", "dev-webhook-secret", "test-webhook-secret"]);
@@ -111,6 +131,10 @@ function productionConfig(env: Env): RuntimeConfig {
   const mediaDir = directory(env, "DVORIK_MEDIA_DIR");
   const backupDir = directory(env, "DVORIK_BACKUP_DIR");
   if (path.resolve(mediaDir) === path.resolve(backupDir)) throw new Error("DVORIK_MEDIA_DIR and DVORIK_BACKUP_DIR must be different directories");
+  const staff = staffConfig(env);
+  if (staff.mode !== "external") throw new Error("DVORIK_STAFF_MODE must be external in production");
+  const warehouse = warehouseConfig(env);
+  if (warehouse.mode !== "external") throw new Error("DVORIK_WAREHOUSE_MODE must be external in production");
   return {
     production: true,
     devToolsEnabled: false,
@@ -120,7 +144,9 @@ function productionConfig(env: Env): RuntimeConfig {
     timezone: configuredTimezone,
     telegramBotToken: token,
     telegramWebhookSecret: webhookSecret,
-    ...(sabyConfig(env) ? { saby: sabyConfig(env) } : {}),
+    cash: cashConfig(env),
+    staff,
+    warehouse,
     objectStorage: {
       endpoint,
       bucket: required(env, "DVORIK_OBJECT_STORAGE_BUCKET"),
@@ -143,7 +169,9 @@ export function loadRuntimeConfig(env: Env = process.env): RuntimeConfig {
     timezone: timezone(env.DVORIK_TIMEZONE || "Asia/Vladivostok"),
     telegramBotToken: env.TELEGRAM_BOT_TOKEN || "dev-token",
     telegramWebhookSecret: env.TELEGRAM_WEBHOOK_SECRET || "dev-webhook-secret",
-    ...(sabyConfig(env) ? { saby: sabyConfig(env) } : {}),
+    cash: cashConfig(env),
+    staff: staffConfig(env),
+    warehouse: warehouseConfig(env),
     sessionCookie: {
       name: "dvorik_session",
       secret: env.DVORIK_SESSION_SECRET || "development-session-secret-32-bytes-minimum",

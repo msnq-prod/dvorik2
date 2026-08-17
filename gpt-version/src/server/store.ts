@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 import fs from "node:fs";
 import path from "node:path";
-import type { AppState, AuditEntry, Location, Product, StockBalance, User } from "../shared/types";
+import type { AppState, AuditEntry, Location, Manufacturer, Product, ProductGroup, ProductPackaging, ProductPriceHistory, StockBalance, User } from "../shared/types";
 import { rolePermissions } from "./permissions";
 import { applyMigrations, listMigrations } from "./migrations";
 import { buildNormalizedStateSql } from "./state-migration";
@@ -24,7 +24,9 @@ const expectedRuntimeTables = [
   "schedule_days", "shifts", "shift_assignments", "shift_swap_requests", "rotation_templates",
   "imports", "import_rows", "merge_jobs", "label_jobs", "notification_preferences",
   "outbox_messages", "audit_entries", "idempotency_keys", "migration_batches",
-  "telegram_updates", "webapp_notifications"
+  "telegram_updates", "webapp_notifications", "supplies", "supply_lines",
+  "inventory_lots", "lot_cost_adjustments", "fifo_allocations", "integration_inbox",
+  "domain_outbox", "product_profitability_projection"
 ] as const;
 
 function database() {
@@ -95,7 +97,11 @@ const products: Product[] = [
       { id: "i-1", productId: "p-1", type: "supplier_article", value: "A-100", supplierId: "sup-1" },
       { id: "i-2", productId: "p-1", type: "barcode", value: "4601234567890" }
     ],
-    lowStockThreshold: 5
+    lowStockThreshold: 3,
+    groupId: "group-weight-sweets",
+    inventoryKind: "weight",
+    packageMassGrams: 1250,
+    article: "A-100"
   },
   {
     id: "p-2",
@@ -107,7 +113,7 @@ const products: Product[] = [
     tags: ["без сахара"],
     status: "active",
     identifiers: [
-      { id: "i-3", productId: "p-2", type: "supplier_article", value: "A-100", supplierId: "sup-2" },
+      { id: "i-3", productId: "p-2", type: "supplier_article", value: "P-200", supplierId: "sup-2" },
       { id: "i-4", productId: "p-2", type: "barcode", value: "2000000000022" }
     ],
     lowStockThreshold: 12
@@ -122,13 +128,62 @@ const products: Product[] = [
     tags: ["сезон"],
     status: "active",
     identifiers: [{ id: "i-5", productId: "p-3", type: "legacy_article", value: "LEG-77" }],
-    lowStockThreshold: 10
+    lowStockThreshold: 10,
+    inventoryKind: "piece"
+  },
+  {
+    id: "p-4",
+    officialName: "Мармелад ягодный",
+    localName: "Мармелад ягодный",
+    unit: "кг",
+    photoUrl: "https://images.unsplash.com/photo-1575224300306-1b8da36134ec?auto=format&fit=crop&w=900&q=80",
+    category: "Весовые сладости",
+    tags: ["ягодный"],
+    status: "active",
+    identifiers: [{ id: "i-6", productId: "p-4", type: "supplier_article", value: "B-150" }],
+    lowStockThreshold: 2,
+    groupId: "group-weight-sweets",
+    inventoryKind: "weight",
+    packageMassGrams: 1500,
+    article: "B-150"
+  },
+  {
+    id: "p-5",
+    officialName: "Драже шоколадное",
+    localName: "Драже шоколадное",
+    unit: "кг",
+    photoUrl: "https://images.unsplash.com/photo-1549007994-cb92caebd54b?auto=format&fit=crop&w=900&q=80",
+    category: "Весовые сладости",
+    tags: ["шоколад"],
+    status: "active",
+    identifiers: [{ id: "i-7", productId: "p-5", type: "supplier_article", value: "C-200" }],
+    lowStockThreshold: 1,
+    groupId: "group-weight-sweets",
+    inventoryKind: "weight",
+    packageMassGrams: 2000,
+    article: "C-200"
   }
 ];
 
+const productGroups: ProductGroup[] = [{ id: "group-weight-sweets", name: "Весовые сладости", inventoryKind: "weight", status: "active", version: 0 }];
+const manufacturers: Manufacturer[] = [{ id: "manufacturer-dvorik", name: "Дворик", status: "active", version: 0 }];
+const packagings: ProductPackaging[] = [
+  { id: "pack-p1", productId: "p-1", name: "Пачка 1,25 кг", unitsPerPackage: 1, massGrams: 1250, isPrimary: true, version: 0 },
+  { id: "pack-p4", productId: "p-4", name: "Пачка 1,5 кг", unitsPerPackage: 1, massGrams: 1500, isPrimary: true, version: 0 },
+  { id: "pack-p5", productId: "p-5", name: "Пачка 2 кг", unitsPerPackage: 1, massGrams: 2000, isPrimary: true, version: 0 }
+];
+const priceHistory: ProductPriceHistory[] = [
+  { id: "price-p1", productId: "p-1", priceKopecks: 78000, priceUnit: "kilogram", effectiveFrom: "2026-07-01", createdByUserId: "u-admin", createdAt: "2026-07-01T00:00:00.000Z" },
+  { id: "price-p4", productId: "p-4", priceKopecks: 82000, priceUnit: "kilogram", effectiveFrom: "2026-07-01", createdByUserId: "u-admin", createdAt: "2026-07-01T00:00:00.000Z" },
+  { id: "price-p5", productId: "p-5", priceKopecks: 95000, priceUnit: "kilogram", effectiveFrom: "2026-07-01", createdByUserId: "u-admin", createdAt: "2026-07-01T00:00:00.000Z" }
+];
+
 const balances: StockBalance[] = [
-  { productId: "p-1", locationId: "loc-main", quantity: 18.5, version: 1 },
-  { productId: "p-1", locationId: "loc-counter", quantity: 3, version: 1 },
+  { productId: "p-1", locationId: "loc-main", quantity: 8, version: 1 },
+  { productId: "p-1", locationId: "loc-counter", quantity: 2, version: 1 },
+  { productId: "p-4", locationId: "loc-main", quantity: 4, version: 1 },
+  { productId: "p-4", locationId: "loc-house", quantity: 1, version: 1 },
+  { productId: "p-5", locationId: "loc-counter", quantity: 3, version: 1 },
   { productId: "p-2", locationId: "loc-main", quantity: 32, version: 1 },
   { productId: "p-2", locationId: "loc-house", quantity: 6, version: 1 },
   { productId: "p-3", locationId: "loc-main", quantity: 8, version: 1 }
@@ -138,6 +193,10 @@ export function createSeedState(): AppState {
   return {
     users: structuredClone(users),
     products: structuredClone(products),
+    productGroups: structuredClone(productGroups),
+    manufacturers: structuredClone(manufacturers),
+    packagings: structuredClone(packagings),
+    priceHistory: structuredClone(priceHistory),
     locations: structuredClone(locations),
     balances: structuredClone(balances),
     operations: [
@@ -146,7 +205,7 @@ export function createSeedState(): AppState {
         type: "receipt",
         productId: "p-1",
         toLocationId: "loc-main",
-        quantity: 18.5,
+        quantity: 8,
         actorId: "u-admin",
         reason: "Начальный приход",
         idempotencyKey: "seed-1",
@@ -191,9 +250,26 @@ export function createSeedState(): AppState {
 
 export function normalizeState(parsed: Partial<AppState>): AppState {
   const seed = createSeedState();
+  const legacyDemoProduct = parsed.products?.find((product) => product.id === "p-1" && product.officialName === "Мармелад ассорти" && product.unit === "кг" && !product.inventoryKind && !product.packageMassGrams);
+  const demoProducts = legacyDemoProduct
+    ? [...(parsed.products || []).filter((product) => product.id !== "p-1"), ...seed.products.filter((product) => ["p-1", "p-4", "p-5"].includes(product.id))]
+    : parsed.products;
+  const demoBalances = legacyDemoProduct
+    ? [...(parsed.balances || []).filter((balance) => !["p-1", "p-4", "p-5"].includes(balance.productId)), ...seed.balances.filter((balance) => ["p-1", "p-4", "p-5"].includes(balance.productId))]
+    : parsed.balances;
+  const demoOperations = legacyDemoProduct
+    ? (parsed.operations || []).map((operation) => operation.id === "op-seed-1" && operation.productId === "p-1" ? { ...operation, quantity: 8 } : operation)
+    : parsed.operations;
   const normalized = {
     ...seed,
     ...parsed,
+    ...(demoProducts ? { products: demoProducts } : {}),
+    ...(demoBalances ? { balances: demoBalances } : {}),
+    ...(demoOperations ? { operations: demoOperations } : {}),
+    productGroups: legacyDemoProduct ? seed.productGroups : parsed.productGroups || seed.productGroups,
+    manufacturers: legacyDemoProduct ? seed.manufacturers : parsed.manufacturers || seed.manufacturers,
+    packagings: legacyDemoProduct ? seed.packagings : parsed.packagings || seed.packagings,
+    priceHistory: legacyDemoProduct ? seed.priceHistory : parsed.priceHistory || seed.priceHistory,
     sessions: (parsed.sessions || []).filter((session) => !session.revokedAt && new Date(session.expiresAt).getTime() > Date.now()),
     scheduleDays: parsed.scheduleDays || [],
     outbox: parsed.outbox || [],
@@ -203,8 +279,8 @@ export function normalizeState(parsed: Partial<AppState>): AppState {
     labelJobs: parsed.labelJobs || [],
     idempotency: parsed.idempotency || {}
   };
-  const units = new Map(normalized.products.map((product) => [product.id, product.unit]));
-  normalized.products = normalized.products.map((product) => ({ ...product, lowStockThreshold: requireQuantity(product.lowStockThreshold, { unit: product.unit }) }));
+  const units = new Map(normalized.products.map((product) => [product.id, product.inventoryKind === "weight" ? "шт" as const : product.unit]));
+  normalized.products = normalized.products.map((product) => ({ ...product, inventoryKind: product.inventoryKind || "piece", lowStockThreshold: requireQuantity(product.lowStockThreshold, { unit: product.inventoryKind === "weight" ? "шт" : product.unit }) }));
   normalized.balances = normalized.balances.map((balance) => ({ ...balance, quantity: requireQuantity(balance.quantity, { unit: units.get(balance.productId) }) }));
   normalized.operations = normalized.operations.map((operation) => ({ ...operation, quantity: requireQuantity(operation.quantity, { unit: units.get(operation.productId), allowZero: false }) }));
   return normalized;

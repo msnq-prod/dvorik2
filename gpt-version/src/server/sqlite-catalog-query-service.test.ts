@@ -7,6 +7,7 @@ import { applyMigrations } from "./migrations";
 import { buildNormalizedStateSql } from "./state-migration";
 import { createSeedState } from "./store";
 import { SqlCatalogQueryService } from "./sqlite-catalog-query-service";
+import { SqlStaffQueryService } from "./sqlite-staff-query-service";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "dvorik-catalog-query-"));
 const file = path.join(root, "catalog.sqlite");
@@ -21,6 +22,7 @@ try {
     ["query-audit", "u-admin", "query", "query-audit", "read", '{"schemaVersion":1,"value":{"source":"test"}}', "2026-07-15T00:00:00.000Z", 0, "2026-07-15T00:00:00.000Z"]
   );
   const queries = new SqlCatalogQueryService(database);
+  const staffQueries = new SqlStaffQueryService(database);
   const all = queries.products({ status: "all", page: 1, limit: 100 });
   assert.ok(all.items.length > 1);
   assert.deepEqual(all.items.map((item) => item.id), [...all.items].sort((left, right) => `${left.localName}\u0000${left.id}`.localeCompare(`${right.localName}\u0000${right.id}`, "ru")) .map((item) => item.id));
@@ -31,6 +33,10 @@ try {
   assert.notEqual(first.items[0].id, second.items[0].id);
   assert.equal(queries.products({ status: "active", search: "no-such-product", page: 1, limit: 10 }).total, 0);
   const searchableProductId = all.items[0].id;
+  const barcode = all.items.flatMap((item) => item.identifiers).find((identifier) => identifier.type === "barcode");
+  assert.ok(barcode);
+  assert.equal(queries.productByBarcode(` ${barcode.value} `)?.id, barcode.productId);
+  assert.equal(queries.productByBarcode("no-such-barcode"), undefined);
   database.execute("UPDATE products SET local_name = ? WHERE id = ?", ["Ёж-молоко", searchableProductId]);
   assert.deepEqual(queries.products({ status: "all", search: "еж молоко", page: 1, limit: 10 }).items.map((item) => item.id), [searchableProductId]);
   assert.ok(queries.locations().length > 0);
@@ -50,11 +56,11 @@ try {
   assert.deepEqual(queries.audit().map((entry) => entry.id), [...queries.audit()]
     .sort((left, right) => `${right.createdAt}\u0000${right.id}`.localeCompare(`${left.createdAt}\u0000${left.id}`))
     .map((entry) => entry.id));
-  const adminShifts = queries.shifts({ userId: "u-admin" });
+  const adminShifts = staffQueries.shifts({ userId: "u-admin" });
   assert.ok(adminShifts.length > 0);
   assert.equal(adminShifts.every((shift) => shift.employeeIds.includes("u-admin")), true);
-  assert.equal(queries.days({ userId: "u-admin" }).every((day) => adminShifts.some((shift) => shift.date === day.date && shift.locationId === day.locationId)), true);
-  assert.deepEqual(queries.shifts({}).map((shift) => shift.id), [...queries.shifts({})]
+  assert.equal(staffQueries.days({ userId: "u-admin" }).every((day) => adminShifts.some((shift) => shift.date === day.date && shift.locationId === day.locationId)), true);
+  assert.deepEqual(staffQueries.shifts({}).map((shift) => shift.id), [...staffQueries.shifts({})]
     .sort((left, right) => `${left.date}\u0000${left.start}\u0000${left.id}`.localeCompare(`${right.date}\u0000${right.start}\u0000${right.id}`))
     .map((shift) => shift.id));
   database.execute(

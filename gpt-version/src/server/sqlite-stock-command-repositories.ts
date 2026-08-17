@@ -211,8 +211,8 @@ export function createProductsRepository(database: DatabaseContext): ProductsRep
     },
     save(product, options) {
       const result = database.execute(
-        "UPDATE products SET local_name = ?, category = ?, status = ?, group_id = ?, manufacturer_id = ?, inventory_kind = ?, package_mass_grams = ?, article = ?, archived_at = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
-        [product.localName, product.category, product.status, product.groupId ?? null, product.manufacturerId ?? null, product.inventoryKind ?? "piece", product.packageMassGrams ?? null, product.article ?? "", product.status === "archived" ? options.at : null, options.at, product.id, options.expectedRevision]
+        "UPDATE products SET local_name = ?, photo_url = ?, category = ?, status = ?, group_id = ?, manufacturer_id = ?, inventory_kind = ?, package_mass_grams = ?, article = ?, archived_at = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
+        [product.localName, product.photoUrl, product.category, product.status, product.groupId ?? null, product.manufacturerId ?? null, product.inventoryKind ?? "piece", product.packageMassGrams ?? null, product.article ?? "", product.status === "archived" ? options.at : null, options.at, product.id, options.expectedRevision]
       );
       const current = productRecord(database, product.id);
       if (result.changes === 1) {
@@ -517,6 +517,19 @@ function createCatalogReferenceRepository(database: DatabaseContext): CatalogCom
     },
     appendPrice(value) {
       const result = database.execute("INSERT INTO product_price_history(id,group_id,product_id,price_kopecks,price_unit,effective_from,created_by_user_id,created_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING", [value.id, value.groupId ?? null, value.productId ?? null, value.priceKopecks, value.priceUnit, value.effectiveFrom, value.createdByUserId ?? null, value.createdAt]);
+      return result.changes === 1 ? "created" : "duplicate";
+    },
+    appendBarcode(value, at) {
+      const row = productIdentifierMapper.toRow({
+        ...value,
+        normalizedValue: value.value.trim().toLocaleLowerCase("ru-RU"),
+        createdAt: at
+      });
+      const columns = ["id", "product_id", "supplier_id", "type", "value", "normalized_value", "created_at"] as const;
+      const result = database.execute(
+        `INSERT OR IGNORE INTO product_identifiers(${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+        values(row, columns)
+      );
       return result.changes === 1 ? "created" : "duplicate";
     }
   };

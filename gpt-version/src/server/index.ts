@@ -5,10 +5,9 @@ import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
 import { nanoid } from "nanoid";
 import PDFDocument from "pdfkit";
-import type { LabelPrintJob, Product, ProductIdentifier, User } from "../shared/types";
+import type { LabelPrintJob, Manufacturer, Product, ProductGroup, ProductIdentifier, ProductPackaging, ProductPriceHistory, User } from "../shared/types";
 import { decodedBase64ByteLength, MEDIA_UPLOAD_JSON_LIMIT_BYTES, MEDIA_UPLOAD_MAX_BYTES, MEDIA_UPLOAD_MAX_LABEL, normalizeMediaBase64 } from "../shared/mediaUpload";
 import { signTelegramInitData, verifyTelegramInitData } from "./auth";
-import { buildBarcode } from "./barcodes";
 import { DomainError, requirePermission } from "./domain-core";
 import { hasPermission, rolePermissions } from "./permissions";
 import { assertImageProcessorCapability, compressImage, createMediaStorage, mediaKey, type MediaMimeType, validateExternalMediaUrl } from "./media";
@@ -39,12 +38,20 @@ import { labelJobFromRow } from "./mappers/workflows";
 import { UnitOfWork } from "./unit-of-work";
 import { deferredLaunchFeatureForRoute } from "./launch-scope";
 import { SqlCatalogQueryService } from "./sqlite-catalog-query-service";
+import { SqlStaffQueryService } from "./sqlite-staff-query-service";
 import { handleProductionTelegramUpdate, type ProductionTelegramIdentityHooks } from "./telegram-production";
 import { createFixedWindowRateLimiter, createHttpMetrics, crossOriginMutationRejected, invalidJsonPayload, isUnsafeApiMutation, requestCorrelationId, safeLogPath, securityHeaders } from "./runtime-observability";
 import { routePolicyFor } from "./route-policy";
 import { createSqliteBackupBundle, listSqliteBackupBundles, restoreSqliteBackupBundle } from "./sqlite-backup";
-import { SabyClient } from "./saby-client";
-import { SabyContractError, SabySyncService } from "./saby-sync-service";
+import { CashClient } from "./cash-client";
+import { StaffClient } from "./staff-client";
+import { verifyInternalRequest } from "../cash/signature";
+import type { CashEvent, StaffEvent } from "../contracts/events";
+import { registerWarehouseRoutes, WarehouseService } from "../modules/warehouse";
+import { WarehouseClient } from "./warehouse-client";
+import { CompanyProjectionService, CompanyQueryService, registerCompanyRoutes } from "../modules/company";
+import { PlatformCashEventService } from "../modules/platform";
+import { inspectSupplyFile, parseSupplyFile } from "./supply-file-parser";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const runtimeConfig = loadRuntimeConfig();
@@ -117,6 +124,7 @@ app.use((req, res, next) => {
   next();
 });
 app.use("/api/media/upload", express.json({ limit: MEDIA_UPLOAD_JSON_LIMIT_BYTES }));
+app.use("/api/warehouse/supply-drafts", express.json({ limit: "7mb" }));
 app.use(express.json({ limit: "2mb" }));
 app.use("/api", (req, res, next) => {
   if (isUnsafeApiMutation(req.method, req.path) && req.body !== undefined && invalidJsonPayload(req.body)) {
@@ -159,12 +167,27 @@ if (runtimeConfig.production && sessionDatabase) {
   INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, datetime('now'));`);
   applyMigrations(sessionDatabase);
 }
-const sabyService = sessionDatabase && runtimeConfig.saby ? new SabySyncService(
-  sessionDatabase,
-  new SabyClient(runtimeConfig.saby),
-  { pointId: runtimeConfig.saby.pointId, timezone: runtimeConfig.timezone, overlapMinutes: runtimeConfig.saby.overlapMinutes, initialLookbackHours: runtimeConfig.saby.initialLookbackHours }
-) : undefined;
+const cashClient = runtimeConfig.cash.mode === "external" && runtimeConfig.cash.baseUrl && runtimeConfig.cash.internalSecret
+  ? new CashClient(runtimeConfig.cash.baseUrl, runtimeConfig.cash.internalSecret)
+  : undefined;
+const staffClient = runtimeConfig.staff.mode === "external" && runtimeConfig.staff.baseUrl && runtimeConfig.staff.internalSecret
+  ? new StaffClient(runtimeConfig.staff.baseUrl, runtimeConfig.staff.internalSecret)
+  : undefined;
+const legacyStaffEnabled = !runtimeConfig.production && !staffClient;
+const warehouseClient = runtimeConfig.warehouse.mode === "external" && runtimeConfig.warehouse.baseUrl && runtimeConfig.warehouse.internalSecret
+  ? new WarehouseClient(runtimeConfig.warehouse.baseUrl, runtimeConfig.warehouse.internalSecret)
+  : undefined;
+const warehouseDatabase = !warehouseClient && runtimeConfig.warehouse.mode === "embedded" && runtimeConfig.warehouse.databaseFile
+  ? openDatabase(runtimeConfig.warehouse.databaseFile, { fileMustExist: true })
+  : undefined;
+const warehouseServiceDatabase = warehouseDatabase ?? sessionDatabase;
+const warehouseService = !warehouseClient && warehouseServiceDatabase ? new WarehouseService(warehouseServiceDatabase) : undefined;
+const warehousePort = warehouseClient ?? warehouseService;
+const companyProjectionService = sessionDatabase ? new CompanyProjectionService(sessionDatabase) : undefined;
+const companyQueryService = companyProjectionService ? new CompanyQueryService(companyProjectionService) : undefined;
+const platformCashEventService = sessionDatabase ? new PlatformCashEventService(sessionDatabase) : undefined;
 const catalogQueries = sessionDatabase ? new SqlCatalogQueryService(sessionDatabase) : undefined;
+const staffQueries = legacyStaffEnabled && sessionDatabase ? new SqlStaffQueryService(sessionDatabase) : undefined;
 const identityUnitOfWork = sessionDatabase ? new UnitOfWork(sessionDatabase, createSqliteIdentityCommandRepositories) : undefined;
 const identityQueryService = identityUnitOfWork ? new IdentityQueryService(identityUnitOfWork) : undefined;
 const commandActorResolver = { resolve: (reference: unknown) => reference };
@@ -172,7 +195,8 @@ const identityService = identityUnitOfWork ? new IdentityService(
   new CommandExecutor(identityUnitOfWork, { now: () => new Date().toISOString() }, commandActorResolver),
   { processingTimeoutMs: 30_000, idempotencyRetentionMs: 7 * 24 * 60 * 60_000, outboxMaxAttempts: 8 }
 ) : undefined;
-const stockUnitOfWork = sessionDatabase ? new UnitOfWork(sessionDatabase, createSqliteStockCommandRepositories) : undefined;
+const legacyStockEnabled = !runtimeConfig.production;
+const stockUnitOfWork = legacyStockEnabled && sessionDatabase ? new UnitOfWork(sessionDatabase, createSqliteStockCommandRepositories) : undefined;
 const stockExecutor = stockUnitOfWork ? new CommandExecutor(stockUnitOfWork, { now: () => new Date().toISOString() }, commandActorResolver) : undefined;
 const stockCommandOptions = { processingTimeoutMs: 30_000, idempotencyRetentionMs: 7 * 24 * 60 * 60_000, outboxMaxAttempts: 8 };
 const stockService = stockExecutor ? new StockOperationService(stockExecutor, stockCommandOptions) : undefined;
@@ -191,17 +215,17 @@ const artifactService = artifactUnitOfWork ? new ArtifactCommandService(
   new CommandExecutor(artifactUnitOfWork, { now: () => new Date().toISOString() }, commandActorResolver),
   stockCommandOptions
 ) : undefined;
-const inventorySessionUnitOfWork = sessionDatabase ? new UnitOfWork(sessionDatabase, createSqliteInventorySessionRepositories) : undefined;
+const inventorySessionUnitOfWork = legacyStockEnabled && sessionDatabase ? new UnitOfWork(sessionDatabase, createSqliteInventorySessionRepositories) : undefined;
 const inventorySessionService = inventorySessionUnitOfWork ? new InventorySessionService(
   new CommandExecutor(inventorySessionUnitOfWork, { now: () => new Date().toISOString() }, commandActorResolver),
   stockCommandOptions
 ) : undefined;
 const inventoryService = stockExecutor ? new InventoryService(stockExecutor, stockCommandOptions) : undefined;
 const reversalService = stockExecutor ? new ReversalService(stockExecutor, stockCommandOptions) : undefined;
-const scheduleUnitOfWork = sessionDatabase ? new UnitOfWork(sessionDatabase, createSqliteScheduleCommandRepositories) : undefined;
+const scheduleUnitOfWork = legacyStaffEnabled && sessionDatabase ? new UnitOfWork(sessionDatabase, createSqliteScheduleCommandRepositories) : undefined;
 const scheduleExecutor = scheduleUnitOfWork ? new CommandExecutor(scheduleUnitOfWork, { now: () => new Date().toISOString() }, commandActorResolver) : undefined;
 const scheduleService = scheduleExecutor ? new ScheduleSwapService(scheduleExecutor, stockCommandOptions) : undefined;
-const staffScheduleUnitOfWork = sessionDatabase ? new UnitOfWork(sessionDatabase, createSqliteStaffScheduleRepositories) : undefined;
+const staffScheduleUnitOfWork = legacyStaffEnabled && sessionDatabase ? new UnitOfWork(sessionDatabase, createSqliteStaffScheduleRepositories) : undefined;
 const staffScheduleService = staffScheduleUnitOfWork ? new StaffScheduleService(
   new CommandExecutor(staffScheduleUnitOfWork, { now: () => new Date().toISOString() }, commandActorResolver),
   stockCommandOptions
@@ -396,19 +420,49 @@ function labelGeometry(body: Record<string, unknown>) {
   return { widthMm: width, heightMm: height, labelsPerPage: perRow * rows, perRow, rows };
 }
 
-function labelJobFromBody(user: User, body: Record<string, unknown>) {
+type WarehouseLabelProduct = Readonly<{
+  id: string;
+  officialName: string;
+  localName: string;
+  unit: Product["unit"];
+  article: string;
+  inventoryKind: "piece" | "weight";
+  packageMassGrams?: number;
+  status: "active" | "archived" | "deleted";
+}>;
+
+function labelManufacturer(officialName: string) {
+  const segments = officialName.split("/").map((part) => part.trim()).filter(Boolean);
+  if (segments.length < 2) return "Не указан";
+  return segments.slice(1).join(" / ");
+}
+
+async function warehouseLabelCatalog() {
+  if (!warehousePort) return [] as WarehouseLabelProduct[];
+  return await warehousePort.catalog() as WarehouseLabelProduct[];
+}
+
+async function labelJobFromBody(user: User, body: Record<string, unknown>) {
   const rawItems = Array.isArray(body.items)
     ? body.items
     : ((body.productIds as string[] | undefined) || []).map((productId) => ({ productId, quantity: 1 }));
   const printedAt = new Date().toLocaleDateString("ru-RU", { timeZone: "Asia/Vladivostok" });
+  const warehouseProducts = await warehouseLabelCatalog();
   const labels: LabelPrintJob["labels"] = rawItems.map((raw) => {
     const item = raw as { productId?: string; quantity?: number };
-    const product = catalogQueries?.productById(String(item.productId || ""))
+    const warehouseProduct = warehouseProducts.find((candidate) => candidate.id === String(item.productId || "") && candidate.status === "active");
+    const product = warehouseProduct
+      ?? catalogQueries?.productById(String(item.productId || ""))
       ?? legacyState.products.find((candidate) => candidate.id === String(item.productId || "") && candidate.status !== "deleted");
     if (!product) throw new DomainError("NO_LABEL_PRODUCTS", "Выберите существующий товар");
     const quantity = Math.max(1, Math.min(99, Math.floor(Number(item.quantity || 1))));
-    const sku = product.identifiers[0]?.value || product.id;
-    const barcodeValue = product.identifiers.find((identifier) => identifier.type === "barcode")?.value || sku;
+    const coreProduct = "identifiers" in product ? product : undefined;
+    const sku = warehouseProduct?.article || coreProduct?.identifiers[0]?.value || product.id;
+    const manufacturer = warehouseProduct
+      ? labelManufacturer(warehouseProduct.officialName)
+      : coreProduct?.manufacturerId
+        ? (catalogQueries?.manufacturers() ?? legacyState.manufacturers ?? []).find((candidate) => candidate.id === coreProduct.manufacturerId)?.name
+        : undefined;
     return {
       productId: product.id,
       title: product.localName || product.officialName,
@@ -416,7 +470,7 @@ function labelJobFromBody(user: User, body: Record<string, unknown>) {
       unit: product.unit,
       quantity,
       printedAt,
-      barcode: buildBarcode(barcodeValue, product.id)
+      manufacturer: manufacturer || "Не указан"
     };
   });
   if (!labels.length) throw new DomainError("NO_LABEL_PRODUCTS", "Выберите хотя бы один товар");
@@ -462,31 +516,13 @@ function renderLabelsPdf(res: express.Response, job: Pick<LabelPrintJob, "geomet
     const row = Math.floor(index / job.geometry.perRow);
     const x = 28 + col * (labelWidth + gap);
     const y = 28 + row * (labelHeight + gap);
-    const barcodeHeight = Math.max(8, Math.min(28, labelHeight - 56));
-    const barcodeY = y + 34;
-    doc.roundedRect(x, y, labelWidth, labelHeight, 4).stroke("#777777");
-    doc.fontSize(11).fillColor("#111111").text(label.title, x + 8, y + 9, { width: labelWidth - 16, height: 28, ellipsis: true });
-    drawBarcode(doc, label.barcode.pattern, x + 8, barcodeY, labelWidth - 16, barcodeHeight);
-    doc.fontSize(7).fillColor("#111111").text(`${label.barcode.type.toUpperCase()}: ${label.barcode.value}`, x + 8, barcodeY + barcodeHeight + 2, { width: labelWidth - 16, align: "center" });
-    doc.fontSize(8).fillColor("#555555").text(`SKU: ${label.sku}`, x + 8, barcodeY + barcodeHeight + 13, { width: labelWidth - 16 });
-    doc.text(`Ед.: ${label.unit}`, x + 8, barcodeY + barcodeHeight + 24, { width: labelWidth - 16 });
-    doc.text(label.printedAt, x + 8, y + labelHeight - 18, { width: labelWidth - 16 });
+    doc.rect(x, y, labelWidth, labelHeight).lineWidth(1.2).stroke("#111111");
+    doc.fontSize(10).fillColor("#111111").text(label.title, x + 7, y + 7, { width: labelWidth - 14, height: 28, align: "center", ellipsis: true });
+    doc.fontSize(8).text(`Производитель: ${label.manufacturer || "Не указан"}`, x + 7, y + 34, { width: labelWidth - 14, height: 24, align: "center", ellipsis: true });
+    doc.fontSize(8).text(`Дата вскрытия: ${label.printedAt}`, x + 7, y + labelHeight - 31, { width: labelWidth - 14 });
+    doc.text("Срок годности: 12 месяцев", x + 7, y + labelHeight - 19, { width: labelWidth - 14 });
   });
   doc.end();
-}
-
-function drawBarcode(doc: PDFKit.PDFDocument, pattern: string, x: number, y: number, width: number, height: number) {
-  const moduleWidth = width / pattern.length;
-  let index = 0;
-  while (index < pattern.length) {
-    if (pattern[index] === "0") {
-      index += 1;
-      continue;
-    }
-    const start = index;
-    while (index < pattern.length && pattern[index] === "1") index += 1;
-    doc.rect(x + start * moduleWidth, y, (index - start) * moduleWidth, height).fill("#111111");
-  }
 }
 
 const openApiContract = {
@@ -505,12 +541,14 @@ const openApiContract = {
     "/api/telegram/webhook": { post: { summary: "Receive Telegram bot update" } },
     "/api/saby/webhook/{secret}": { post: { summary: "Receive Saby change signal; body is stored but not trusted as sales data" } },
     "/api/saby/status": { get: { summary: "Saby sync status" } },
+    "/api/cash/status": { get: { summary: "Optional cash service availability" } },
     "/api/saby/mappings": { get: { summary: "List Saby nomenclature mappings" }, put: { summary: "Map Saby nomenclature UUID to a Dvorik product" } },
     "/api/telegram/onboarding/{id}/approve": { post: { summary: "Approve pending Telegram user" } },
     "/api/notification-preferences": { get: { summary: "List notification preferences" }, put: { summary: "Set notification preference" } },
     "/api/auth/logout": { post: { summary: "Revoke current session" } },
     "/api/session": { get: { summary: "Current session" } },
     "/api/staff": { get: { summary: "List active staff for scheduling" } },
+    "/api/staff/status": { get: { summary: "Staff outbox health" } },
     "/api/staff/profiles": { get: { summary: "List non-financial employee profiles" } },
     "/api/staff/{id}/profile": { put: { summary: "Create or update non-financial employee profile" } },
     "/api/hr-events": { get: { summary: "List non-financial HR events" }, post: { summary: "Record non-financial HR event" } },
@@ -523,6 +561,16 @@ const openApiContract = {
     "/api/media/upload": { post: { summary: "Temporary JSON/base64 media upload, decoded limit 5 MiB; multipart target is MED-1101" } },
     "/api/stock/operations": { get: { summary: "List stock operations" }, post: { summary: "Create stock operation" } },
     "/api/stock/totals": { get: { summary: "List accounting totals separately from shelf placements" } },
+    "/api/warehouse/supplies": { post: { summary: "Accept a package-based supply and create FIFO lots" } },
+    "/api/warehouse/opening-lots": { post: { summary: "Register an audited FIFO opening lot without changing the accounting balance" } },
+    "/api/warehouse/products/{id}/profitability": { get: { summary: "Product profitability with source completeness" } },
+    "/api/warehouse/cutover-readiness": { get: { summary: "Compare legacy accounting totals with FIFO lot quantities before warehouse cutover" } },
+    "/api/warehouse/status": { get: { summary: "Warehouse cutover, outbox and inbox health" } },
+    "/api/company/status": { get: { summary: "Company projection worker and Warehouse delivery health" } },
+    "/api/runtime/capabilities": { get: { summary: "Runtime ownership modes for client actions" } },
+    "/api/warehouse/lots": { get: { summary: "List FIFO lots, optionally filtered by productId" } },
+    "/api/company/products/{id}/profitability": { get: { summary: "Company profitability projection built from warehouse events" } },
+    "/api/company/overview": { get: { summary: "Combined Warehouse, Cash and Staff projection with source completeness" } },
     "/api/reports/{type}": { get: { summary: "Inventory, discrepancy and canonical movement report DTO" } },
     "/api/reports/{type}/export": { get: { summary: "Export report CSV" } },
     "/api/reports/{type}/pdf": { get: { summary: "Export report PDF" } },
@@ -549,8 +597,9 @@ const openApiContract = {
     "/api/backups/{name}/restore": { post: { summary: "Restore backup" } },
     "/api/labels/preview": { post: { summary: "Preview labels" } },
     "/api/labels/pdf": { post: { summary: "Export labels PDF and save job" } },
-    "/api/labels/jobs": { get: { summary: "List label print jobs" } },
-    "/api/labels/jobs/{id}/pdf": { post: { summary: "Reprint label job PDF" } }
+    "/api/labels/jobs": { get: { summary: "List label print jobs" }, post: { summary: "Save label print job" } },
+    "/api/labels/jobs/{id}/pdf": { post: { summary: "Reprint label job PDF" } },
+    "/api/labels/jobs/{id}/reprint": { post: { summary: "Record and return a label job for browser PDF rendering" } }
   }
 };
 
@@ -594,6 +643,62 @@ app.get("/healthz", (_req, res) => {
 app.get("/metrics", (_req, res) => {
   res.type("text/plain; version=0.0.4").send(httpMetrics.prometheus());
 });
+
+function requireInternalSignature(req: express.Request) {
+  const secret = runtimeConfig.cash.internalSecret
+    ?? runtimeConfig.staff.internalSecret
+    ?? (runtimeConfig.warehouse.mode === "external" ? runtimeConfig.warehouse.internalSecret : undefined);
+  if (!secret) throw new DomainError("INTERNAL_API_DISABLED", "Internal API is disabled", 503);
+  const body = req.method === "GET" ? "" : JSON.stringify(req.body ?? {});
+  if (!verifyInternalRequest(secret, req.header("x-dvorik-timestamp") || "", body, req.header("x-dvorik-signature") || "")) {
+    throw new DomainError("INTERNAL_SIGNATURE_INVALID", "Invalid internal signature", 401);
+  }
+}
+
+app.post("/internal/v1/events/cash", asyncRoute(async (req, res) => {
+  requireInternalSignature(req);
+  if (!warehousePort || !sessionDatabase) throw new DomainError("SERVICE_UNAVAILABLE", "Warehouse service unavailable", 503);
+  const event = req.body as CashEvent;
+  if (!event || event.producer !== "cash" || event.eventVersion !== 1 || typeof event.eventId !== "string" || typeof event.eventType !== "string") {
+    throw new DomainError("EVENT_CONTRACT_INVALID", "Invalid cash event", 400);
+  }
+  if (event.eventType === "SaleStockDelta" || event.eventType === "ReturnRecorded") {
+    const result = await warehousePort.applyCashEvent(event);
+    companyProjectionService?.enqueue(event);
+    res.json(result);
+    return;
+  }
+  if (!platformCashEventService) throw new DomainError("SERVICE_UNAVAILABLE", "Platform service unavailable", 503);
+  const result=platformCashEventService.apply(event);
+  companyProjectionService?.enqueue(event);
+  res.json(result);
+}));
+
+app.post("/internal/v1/events/warehouse", asyncRoute((req, res) => {
+  requireInternalSignature(req);
+  const event = req.body as { producer?: string; eventVersion?: number; eventId?: string; eventType?: string };
+  if (!event || event.producer !== "warehouse" || event.eventVersion !== 1 || typeof event.eventId !== "string" || typeof event.eventType !== "string") {
+    throw new DomainError("EVENT_CONTRACT_INVALID", "Invalid warehouse event", 400);
+  }
+  companyProjectionService?.enqueue(req.body);
+  res.status(202).json({ eventId: event.eventId, status: "accepted" });
+}));
+
+app.post("/internal/v1/events/staff", asyncRoute((req,res)=>{
+  requireInternalSignature(req);
+  const event=req.body as StaffEvent;
+  if(!event||event.producer!=="staff"||event.eventVersion!==1||event.eventType!=="StaffSnapshotUpdated") throw new DomainError("EVENT_CONTRACT_INVALID","Invalid staff event",400);
+  if(!companyProjectionService) throw new DomainError("SERVICE_UNAVAILABLE","Company service unavailable",503);
+  companyProjectionService.enqueue(event);
+  res.json({eventId:event.eventId,status:"accepted"});
+}));
+
+app.get("/internal/v1/catalog/products/:id", asyncRoute(async (req, res) => {
+  requireInternalSignature(req);
+  const product = (await warehouseLabelCatalog()).find((candidate) => candidate.id === req.params.id);
+  if (!product || product.status !== "active") throw new DomainError("PRODUCT_NOT_FOUND", "Product not found", 404);
+  res.json({ id: product.id, status: product.status, inventoryKind: product.inventoryKind, packageMassGrams: product.packageMassGrams });
+}));
 
 if (devToolsEnabled) app.post("/api/auth/demo", asyncRoute((req, res) => {
   requireLocalDevTools(req);
@@ -662,50 +767,43 @@ app.post("/api/telegram/webhook", asyncRoute((req, res) => {
   }));
 }));
 
-app.post("/api/saby/webhook/:secret", asyncRoute((req, res) => {
-  if (!sabyService || !runtimeConfig.saby) throw new DomainError("FEATURE_DISABLED", "Интеграция Saby не настроена", 404);
-  const actual = Buffer.from(req.params.secret || "", "utf8");
-  const expected = Buffer.from(runtimeConfig.saby.webhookSecret, "utf8");
-  if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) throw new DomainError("BAD_SABY_WEBHOOK_SECRET", "Некорректный секрет Saby webhook", 401);
-  const signal = sabyService.recordWebhookSignal(req.body ?? {});
-  res.status(202).json(signal);
+app.post("/api/saby/webhook/:secret", asyncRoute(async (req, res) => {
+  if (!cashClient) throw new DomainError("CASH_UNAVAILABLE", "Кассовый сервис отключён", 503);
+  res.status(202).json(await cashClient.webhook(req.params.secret, req.body ?? {}));
 }));
 
-app.get("/api/saby/status", asyncRoute((req, res) => {
+app.get("/api/saby/status", asyncRoute(async (req, res) => {
   const user = actor(req);
   requirePermission(user, "saby:manage");
-  if (!sabyService) {
-    res.json({ enabled: false, pointId: 0, pendingSignals: 0 });
-    return;
-  }
-  res.json({ enabled: true, pointId: runtimeConfig.saby?.pointId, ...sabyService.status() });
+  res.json(cashClient ? await cashClient.status() : { availability: "disabled", enabled: false });
 }));
 
-app.get("/api/saby/mappings", asyncRoute((req, res) => {
+app.get("/api/saby/mappings", asyncRoute(async (req, res) => {
   const user = actor(req);
   requirePermission(user, "saby:manage");
-  if (!sabyService) {
-    res.json([]);
-    return;
-  }
-  res.json(sabyService.listMappings());
+  if (!cashClient) throw new DomainError("CASH_UNAVAILABLE", "Кассовый сервис отключён", 503);
+  res.json(await cashClient.mappings());
 }));
 
-app.put("/api/saby/mappings", asyncRoute((req, res) => {
+app.put("/api/saby/mappings", asyncRoute(async (req, res) => {
   const user = actor(req);
   requirePermission(user, "saby:manage");
-  if (!sabyService) throw new DomainError("FEATURE_DISABLED", "Интеграция Saby не настроена", 404);
+  if (!cashClient) throw new DomainError("CASH_UNAVAILABLE", "Кассовый сервис отключён", 503);
   const idempotencyKey = req.header("idempotency-key")?.trim();
   if (!idempotencyKey) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", "Требуется Idempotency-Key", 400);
-  try {
-    res.json(sabyService.saveMapping({ uuid: String(req.body?.nomenclatureUuid ?? "").trim(), productId: String(req.body?.productId ?? "").trim(), actorId: user.id, idempotencyKey }));
-  } catch (error) {
-    if (error instanceof SabyContractError) {
-      const status = error.code === "PRODUCT_NOT_FOUND" || error.code === "SABY_ITEM_NOT_FOUND" ? 404 : 409;
-      throw new DomainError(error.code, "Не удалось сохранить сопоставление Saby", status);
-    }
-    throw error;
-  }
+  const productId = String(req.body?.productId ?? "").trim();
+  const product = (await warehouseLabelCatalog()).find((candidate) => candidate.id === productId);
+  if (!product || product.status !== "active") throw new DomainError("PRODUCT_NOT_FOUND", "Товар не найден", 404);
+  res.json(await cashClient.saveMapping({
+    nomenclatureUuid: String(req.body?.nomenclatureUuid ?? "").trim(), productId, actorId: user.id, idempotencyKey,
+    inventoryKind: product.inventoryKind, packageMassGrams: product.packageMassGrams
+  }));
+}));
+
+app.get("/api/cash/status", asyncRoute(async (req, res) => {
+  const user = actor(req);
+  requirePermission(user, "saby:manage");
+  res.json(cashClient ? await cashClient.status() : { availability: "disabled", enabled: false });
 }));
 
 app.post("/api/telegram/onboarding/:id/approve", asyncRoute((req, res) => {
@@ -856,9 +954,62 @@ app.get("/api/products", asyncRoute((req, res) => {
   res.json({ items: filtered.slice((page - 1) * limit, page * limit), total: filtered.length, page, limit });
 }));
 
+app.get("/api/products/by-barcode/:barcode", asyncRoute((req, res) => {
+  const user = actor(req);
+  requirePermission(user, "products:read");
+  const barcode = String(req.params.barcode || "").trim();
+  if (!barcode || barcode.length > 128) throw new DomainError("VALIDATION_ERROR", "Некорректный штрихкод");
+  const product = catalogQueries
+    ? catalogQueries.productByBarcode(barcode)
+    : legacyState.products.find((item) => item.identifiers.some((identifier) => identifier.type === "barcode" && identifier.value.trim().toLocaleLowerCase("ru-RU") === barcode.toLocaleLowerCase("ru-RU")));
+  if (!product || product.status !== "active") throw new DomainError("PRODUCT_NOT_FOUND", "Товар с таким штрихкодом не найден", 404);
+  res.json(product);
+}));
+
+app.post("/api/products/quick-scan", asyncRoute((req, res) => {
+  const user = actor(req);
+  requirePermission(user, "products:scan_manage");
+  if (warehousePort) throw new DomainError("CATALOG_LEGACY_WRITE_DISABLED", "Каталог принадлежит Warehouse; legacy-запись отключена", 410);
+  const barcode = String(req.body.barcode || "").trim();
+  const name = String(req.body.name || "").trim();
+  const inventoryKind = String(req.body.inventoryKind || "piece") as "piece" | "weight";
+  const packageMassGrams = req.body.packageMassGrams === undefined || req.body.packageMassGrams === "" ? undefined : Number(req.body.packageMassGrams);
+  if (!barcode || barcode.length > 128 || !name || !["piece", "weight"].includes(inventoryKind)) {
+    throw new DomainError("VALIDATION_ERROR", "Заполните название, тип товара и штрихкод");
+  }
+  if (inventoryKind === "weight" && (!Number.isInteger(packageMassGrams) || Number(packageMassGrams) <= 0)) {
+    throw new DomainError("PACKAGE_MASS_REQUIRED", "Для весового товара нужна положительная масса пачки в граммах");
+  }
+  const input = {
+    officialName: name,
+    localName: name,
+    unit: inventoryKind === "weight" ? "кг" as const : "шт" as const,
+    inventoryKind,
+    packageMassGrams,
+    category: "Без категории",
+    lowStockThreshold: 5,
+    identifiers: [{ type: "barcode" as const, value: barcode }]
+  };
+  if (catalogService) {
+    commandResponse(res, catalogService.quickCreate(identityMetadata(req, user), input));
+    return;
+  }
+  const conflict = legacyState.products.find((item) => item.identifiers.some((identifier) => identifier.type === "barcode" && identifier.value.trim().toLocaleLowerCase("ru-RU") === barcode.toLocaleLowerCase("ru-RU")));
+  if (conflict) throw new DomainError("IDENTIFIER_CONFLICT", "Штрихкод уже принадлежит другому товару", 409);
+  const product: Product = {
+    id: nanoid(), officialName: name, localName: name, unit: input.unit, photoUrl: "", category: "Без категории",
+    tags: [], status: "active", identifiers: [], lowStockThreshold: 5, inventoryKind, packageMassGrams, article: ""
+  };
+  product.identifiers.push({ id: nanoid(), productId: product.id, type: "barcode", value: barcode });
+  legacyState.products.unshift(product);
+  audit(user.id, "product", product.id, "quick_scan_create", product);
+  res.status(201).json(product);
+}));
+
 app.post("/api/products", asyncRoute((req, res) => {
   const user = actor(req);
   requirePermission(user, "products:write");
+  if (warehousePort) throw new DomainError("CATALOG_LEGACY_WRITE_DISABLED", "Каталог принадлежит Warehouse; legacy-запись отключена", 410);
   if (catalogService) {
     const identifiers = productIdentifiers("pending", req.body).map(({ id: _id, productId: _productId, ...identifier }) => identifier);
     commandResponse(res, catalogService.create(identityMetadata(req, user), {
@@ -880,17 +1031,29 @@ app.post("/api/products", asyncRoute((req, res) => {
   const unit = String(req.body.unit || "шт");
   if (!["шт", "кг", "л", "м"].includes(unit)) throw new DomainError("VALIDATION_ERROR", "Недопустимая единица измерения");
   const lowStockThreshold = Number(req.body.lowStockThreshold ?? 5);
+  const inventoryKind = String(req.body.inventoryKind || "piece") as "piece" | "weight";
+  const packageMassGrams = req.body.packageMassGrams === undefined || req.body.packageMassGrams === "" ? undefined : Number(req.body.packageMassGrams);
+  if (inventoryKind === "piece" && unit !== "шт") throw new DomainError("PIECE_UNIT_REQUIRED", "Штучный товар учитывается только в штуках");
+  if (inventoryKind === "weight" && (!Number.isInteger(packageMassGrams) || Number(packageMassGrams) <= 0)) throw new DomainError("WEIGHT_PACKAGE_MASS_REQUIRED", "Для весового товара укажите массу пачки");
+  const groupId = req.body.groupId ? String(req.body.groupId) : undefined;
+  const group = legacyState.productGroups?.find((item) => item.id === groupId);
+  if (group && group.inventoryKind !== inventoryKind) throw new DomainError("GROUP_KIND_CONFLICT", "Тип товара не совпадает с типом группы", 409);
   const product = {
     id: nanoid(),
     officialName: String(req.body.officialName || "").trim(),
     localName: String(req.body.localName || "").trim(),
     unit: unit as "шт" | "кг" | "л" | "м",
-    photoUrl: String(req.body.photoUrl || "https://images.unsplash.com/photo-1551024601-bec78aea704b?auto=format&fit=crop&w=900&q=80"),
+    photoUrl: String(req.body.photoUrl || ""),
     category: String(req.body.category || "Без категории"),
     tags: [],
     status: "active" as const,
     identifiers: [] as ProductIdentifier[],
-    lowStockThreshold
+    lowStockThreshold,
+    inventoryKind,
+    packageMassGrams,
+    groupId,
+    manufacturerId: req.body.manufacturerId ? String(req.body.manufacturerId) : undefined,
+    article: String(req.body.article || "")
   };
   if (!product.officialName) throw new DomainError("VALIDATION_ERROR", "Название обязательно");
   product.identifiers = productIdentifiers(product.id, req.body);
@@ -934,12 +1097,35 @@ app.post("/api/media/validate-link", asyncRoute(async (req, res) => {
   res.json({ valid: true, ...result });
 }));
 
+app.post("/api/products/:id/barcodes", asyncRoute((req, res) => {
+  const user = actor(req);
+  requirePermission(user, "products:scan_manage");
+  if (warehousePort) throw new DomainError("CATALOG_LEGACY_WRITE_DISABLED", "Каталог принадлежит Warehouse; legacy-запись отключена", 410);
+  const barcode = String(req.body.barcode || "").trim();
+  if (!barcode || barcode.length > 128) throw new DomainError("VALIDATION_ERROR", "Некорректный штрихкод");
+  if (catalogService) {
+    commandResponse(res, catalogService.addBarcode(identityMetadata(req, user), { productId: req.params.id, barcode }));
+    return;
+  }
+  const product = legacyState.products.find((item) => item.id === req.params.id && item.status === "active");
+  if (!product) throw new DomainError("NOT_FOUND", "Товар не найден", 404);
+  const conflict = legacyState.products.find((item) => item.identifiers.some((identifier) => identifier.type === "barcode" && identifier.value.trim().toLocaleLowerCase("ru-RU") === barcode.toLocaleLowerCase("ru-RU")));
+  if (conflict && conflict.id !== product.id) throw new DomainError("IDENTIFIER_CONFLICT", "Штрихкод уже принадлежит другому товару", 409);
+  if (!conflict) {
+    product.identifiers.push({ id: nanoid(), productId: product.id, type: "barcode", value: barcode });
+    audit(user.id, "product", product.id, "barcode_add", { barcode });
+  }
+  res.status(conflict ? 200 : 201).json(product);
+}));
+
 app.patch("/api/products/:id", asyncRoute((req, res) => {
   const user = actor(req);
   requirePermission(user, "products:write");
+  if (warehousePort) throw new DomainError("CATALOG_LEGACY_WRITE_DISABLED", "Каталог принадлежит Warehouse; legacy-запись отключена", 410);
   if (catalogService) {
     commandResponse(res, catalogService.update(identityMetadata(req, user), {
       productId: req.params.id,
+      ...(req.body.photoUrl === undefined ? {} : { photoUrl: String(req.body.photoUrl) }),
       ...(req.body.status === undefined ? {} : { status: String(req.body.status) as Product["status"] }),
       ...(req.body.localName === undefined ? {} : { localName: String(req.body.localName) }),
       ...(req.body.category === undefined ? {} : { category: String(req.body.category) })
@@ -956,8 +1142,13 @@ app.patch("/api/products/:id", asyncRoute((req, res) => {
   if (!["active", "archived", "deleted"].includes(status)) throw new DomainError("VALIDATION_ERROR", "Недопустимый статус товара");
   Object.assign(product, {
     status: status as typeof product.status,
+    photoUrl: req.body.photoUrl !== undefined ? String(req.body.photoUrl).trim() : product.photoUrl,
     localName: req.body.localName !== undefined ? String(req.body.localName).trim() : product.localName,
-    category: req.body.category !== undefined ? String(req.body.category).trim() : product.category
+    category: req.body.category !== undefined ? String(req.body.category).trim() : product.category,
+    groupId: req.body.groupId !== undefined ? String(req.body.groupId || "") || undefined : product.groupId,
+    manufacturerId: req.body.manufacturerId !== undefined ? String(req.body.manufacturerId || "") || undefined : product.manufacturerId,
+    packageMassGrams: req.body.packageMassGrams !== undefined ? Number(req.body.packageMassGrams) : product.packageMassGrams,
+    article: req.body.article !== undefined ? String(req.body.article) : product.article
   });
   audit(user.id, "product", product.id, "update", req.body);
   res.json(product);
@@ -966,35 +1157,51 @@ app.patch("/api/products/:id", asyncRoute((req, res) => {
 app.get("/api/product-groups", asyncRoute((req, res) => {
   const user = actor(req);
   requirePermission(user, "products:read");
-  res.json(catalogQueries?.groups() ?? []);
+  res.json(catalogQueries?.groups() ?? legacyState.productGroups ?? []);
 }));
 
 app.post("/api/product-groups", asyncRoute((req, res) => {
   const user = actor(req);
-  if (!catalogService) throw new DomainError("SERVICE_UNAVAILABLE", "Сервис каталога недоступен", 503);
+  if (!catalogService) {
+    requirePermission(user, "products:write");
+    const inventoryKind = String(req.body.inventoryKind || "") as ProductGroup["inventoryKind"];
+    const name = String(req.body.name || "").trim();
+    if (!name || !["piece", "weight"].includes(inventoryKind)) throw new DomainError("VALIDATION_ERROR", "Некорректная группа товара");
+    const group: ProductGroup = { id: nanoid(), name, inventoryKind, status: "active", version: 0 };
+    (legacyState.productGroups ||= []).push(group); audit(user.id, "product_group", group.id, "create", group); res.status(201).json(group); return;
+  }
   commandResponse(res, catalogService.createGroup(identityMetadata(req, user), { name: String(req.body.name || ""), inventoryKind: String(req.body.inventoryKind || "") as "piece" | "weight" }));
 }));
 
 app.get("/api/manufacturers", asyncRoute((req, res) => {
   const user = actor(req);
   requirePermission(user, "products:read");
-  res.json(catalogQueries?.manufacturers() ?? []);
+  res.json(catalogQueries?.manufacturers() ?? legacyState.manufacturers ?? []);
 }));
 
 app.post("/api/manufacturers", asyncRoute((req, res) => {
   const user = actor(req);
-  if (!catalogService) throw new DomainError("SERVICE_UNAVAILABLE", "Сервис каталога недоступен", 503);
+  if (!catalogService) {
+    requirePermission(user, "products:write"); const name = String(req.body.name || "").trim();
+    if (!name) throw new DomainError("VALIDATION_ERROR", "Название обязательно");
+    const manufacturer: Manufacturer = { id: nanoid(), name, status: "active", version: 0 };
+    (legacyState.manufacturers ||= []).push(manufacturer); audit(user.id, "manufacturer", manufacturer.id, "create", manufacturer); res.status(201).json(manufacturer); return;
+  }
   commandResponse(res, catalogService.createManufacturer(identityMetadata(req, user), { name: String(req.body.name || "") }));
 }));
 
 app.get("/api/products/:id/packagings", asyncRoute((req, res) => {
   actor(req);
-  res.json(catalogQueries?.packagings(req.params.id) ?? []);
+  res.json(catalogQueries?.packagings(req.params.id) ?? legacyState.packagings?.filter((item) => item.productId === req.params.id) ?? []);
 }));
 
 app.post("/api/products/:id/packagings", asyncRoute((req, res) => {
   const user = actor(req);
-  if (!catalogService) throw new DomainError("SERVICE_UNAVAILABLE", "Сервис каталога недоступен", 503);
+  if (!catalogService) {
+    requirePermission(user, "products:write"); const name = String(req.body.name || "").trim(); if (!name) throw new DomainError("VALIDATION_ERROR", "Название обязательно");
+    const packaging: ProductPackaging = { id: nanoid(), productId: req.params.id, name, unitsPerPackage: Number(req.body.unitsPerPackage || 1), massGrams: req.body.massGrams ? Number(req.body.massGrams) : undefined, isPrimary: Boolean(req.body.isPrimary), version: 0 };
+    (legacyState.packagings ||= []).push(packaging); audit(user.id, "product_packaging", packaging.id, "create", packaging); res.status(201).json(packaging); return;
+  }
   commandResponse(res, catalogService.addPackaging(identityMetadata(req, user), {
     productId: req.params.id, name: String(req.body.name || ""), unitsPerPackage: Number(req.body.unitsPerPackage || 1),
     massGrams: req.body.massGrams === undefined || req.body.massGrams === "" ? undefined : Number(req.body.massGrams), isPrimary: Boolean(req.body.isPrimary)
@@ -1003,12 +1210,16 @@ app.post("/api/products/:id/packagings", asyncRoute((req, res) => {
 
 app.get("/api/product-prices", asyncRoute((req, res) => {
   actor(req);
-  res.json(catalogQueries?.prices({ groupId: typeof req.query.groupId === "string" ? req.query.groupId : undefined, productId: typeof req.query.productId === "string" ? req.query.productId : undefined }) ?? []);
+  const groupId = typeof req.query.groupId === "string" ? req.query.groupId : undefined; const productId = typeof req.query.productId === "string" ? req.query.productId : undefined;
+  res.json(catalogQueries?.prices({ groupId, productId }) ?? legacyState.priceHistory?.filter((item) => (!groupId || item.groupId === groupId) && (!productId || item.productId === productId)) ?? []);
 }));
 
 app.post("/api/product-prices", asyncRoute((req, res) => {
   const user = actor(req);
-  if (!catalogService) throw new DomainError("SERVICE_UNAVAILABLE", "Сервис каталога недоступен", 503);
+  if (!catalogService) {
+    requirePermission(user, "products:write"); const price: ProductPriceHistory = { id: nanoid(), groupId: req.body.groupId ? String(req.body.groupId) : undefined, productId: req.body.productId ? String(req.body.productId) : undefined, priceKopecks: Number(req.body.priceKopecks), priceUnit: String(req.body.priceUnit) as ProductPriceHistory["priceUnit"], effectiveFrom: String(req.body.effectiveFrom), createdByUserId: user.id, createdAt: new Date().toISOString() };
+    (legacyState.priceHistory ||= []).push(price); audit(user.id, "product_price", price.id, "create", price); res.status(201).json(price); return;
+  }
   commandResponse(res, catalogService.addPrice(identityMetadata(req, user), {
     groupId: req.body.groupId ? String(req.body.groupId) : undefined, productId: req.body.productId ? String(req.body.productId) : undefined,
     priceKopecks: Number(req.body.priceKopecks), priceUnit: String(req.body.priceUnit || "") as "piece" | "kilogram", effectiveFrom: String(req.body.effectiveFrom || "")
@@ -1070,8 +1281,27 @@ app.get("/api/stock/totals", asyncRoute((req, res) => {
   res.json(catalogQueries?.totals() ?? []);
 }));
 
+app.get("/api/runtime/capabilities", asyncRoute((req,res)=>{
+  actor(req);
+  res.json({ warehouseWriteMode: warehousePort ? "fifo" : "legacy" });
+}));
+
+registerWarehouseRoutes(app,{
+  actor,requirePermission,
+  error:(code,message,status)=>new DomainError(code,message,status),
+  service:warehousePort,
+  cashStatus:()=>cashClient?cashClient.status():Promise.resolve({availability:"disabled",enabled:false}),
+  parseSupplyFile,inspectSupplyFile
+});
+registerCompanyRoutes(app,{
+  actor,requireReports:(user)=>requirePermission(user,"reports:read"),
+  error:(code,message,status)=>new DomainError(code,message,status),
+  queries:companyQueryService
+});
+
 app.post("/api/stock/operations", asyncRoute((req, res) => {
   const user = actor(req);
+  if (warehousePort) throw new DomainError("WAREHOUSE_LEGACY_WRITE_DISABLED", "Операции склада выполняются через Warehouse", 410);
   if (stockService) {
     commandResponse(res, stockService.execute(identityMetadata(req, user), {
       type: String(req.body.type || "") as "receipt" | "transfer" | "write_off" | "correction",
@@ -1098,6 +1328,7 @@ app.post("/api/stock/operations", asyncRoute((req, res) => {
 
 app.post("/api/stock/operations/:id/reverse", asyncRoute((req, res) => {
   const user = actor(req);
+  if (warehousePort) throw new DomainError("WAREHOUSE_LEGACY_WRITE_DISABLED", "Операции склада выполняются через Warehouse", 410);
   if (reversalService) {
     commandResponse(res, reversalService.execute(identityMetadata(req, user), req.params.id));
     return;
@@ -1137,7 +1368,7 @@ app.get("/api/reports/:type/export", asyncRoute((req, res) => {
   const user = actor(req);
   const type = req.params.type;
   if (!isReportType(type)) throw new DomainError("BAD_REPORT_TYPE", "Неизвестный тип отчёта");
-  const query = { from: typeof req.query.from === "string" ? req.query.from : undefined, to: typeof req.query.to === "string" ? req.query.to : undefined };
+  const query = { from: typeof req.query.from === "string" ? req.query.from : undefined, to: typeof req.query.to === "string" ? req.query.to : undefined, productId: typeof req.query.productId === "string" ? req.query.productId : undefined, locationId: typeof req.query.locationId === "string" ? req.query.locationId : undefined };
   const rows = catalogQueries
     ? (requirePermission(user, "reports:read"), catalogQueries.reportRows(type, query))
     : reportRows(user, type, query);
@@ -1213,6 +1444,7 @@ app.post("/api/stock/adjustments", asyncRoute((req, res) => {
 
 app.post("/api/inventory/apply", asyncRoute((req, res) => {
   const user = actor(req);
+  if (warehousePort) throw new DomainError("WAREHOUSE_LEGACY_WRITE_DISABLED", "Операции склада выполняются через Warehouse", 410);
   if (inventoryService) {
     commandResponse(res, inventoryService.execute(identityMetadata(req, user), {
       rows: Array.isArray(req.body.rows) ? req.body.rows : [],
@@ -1230,10 +1462,11 @@ app.post("/api/stock/buffer/apply", asyncRoute((req, res) => {
   res.status(200).json({ results });
 }));
 
-app.get("/api/schedule", asyncRoute((req, res) => {
+app.get("/api/schedule", asyncRoute(async (req, res) => {
   const user = actor(req);
-  if (catalogQueries) {
-    res.json(catalogQueries.shifts({
+  if (staffClient) { res.json(await staffClient.schedule({ ...(!hasPermission(user,"schedule:manage") ? {userId:user.id}:{}), ...(typeof req.query.from === "string" ? {from:req.query.from}:{}), ...(typeof req.query.to === "string" ? {to:req.query.to}:{}) })); return; }
+  if (staffQueries) {
+    res.json(staffQueries.shifts({
       ...(typeof req.query.from === "string" ? { from: req.query.from } : {}),
       ...(typeof req.query.to === "string" ? { to: req.query.to } : {})
     }));
@@ -1243,10 +1476,11 @@ app.get("/api/schedule", asyncRoute((req, res) => {
   res.json(listVisibleScheduleShifts(user));
 }));
 
-app.get("/api/schedule/days", asyncRoute((req, res) => {
+app.get("/api/schedule/days", asyncRoute(async (req, res) => {
   const user = actor(req);
-  if (catalogQueries) {
-    res.json(catalogQueries.days({
+  if (staffClient) { res.json(await staffClient.scheduleDays({ ...(typeof req.query.from === "string" ? {from:req.query.from}:{}), ...(typeof req.query.to === "string" ? {to:req.query.to}:{}) })); return; }
+  if (staffQueries) {
+    res.json(staffQueries.days({
       ...(typeof req.query.from === "string" ? { from: req.query.from } : {}),
       ...(typeof req.query.to === "string" ? { to: req.query.to } : {})
     }));
@@ -1255,15 +1489,16 @@ app.get("/api/schedule/days", asyncRoute((req, res) => {
   res.json(legacyState.scheduleDays);
 }));
 
-app.put("/api/schedule/days/:date/:locationId", asyncRoute((req, res) => {
+app.put("/api/schedule/days/:date/:locationId", asyncRoute(async (req, res) => {
   const user = actor(req);
-  if (scheduleService && catalogQueries) {
+  if(staffClient){ const idempotencyKey=req.header("idempotency-key")?.trim(); if(!idempotencyKey) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED","Требуется Idempotency-Key",400); const current=(await staffClient.scheduleDays({from:req.params.date,to:req.params.date})).find((day)=>day.locationId===req.params.locationId); res.json(await staffClient.saveScheduleDay({date:req.params.date,locationId:req.params.locationId,status:req.body.status,comment:String(req.body.comment||""),expectedVersion:current?.version??null,idempotencyKey})); return; }
+  if (scheduleService && staffQueries) {
     commandResponse(res, scheduleService.saveDay(identityMetadata(req, user), {
       date: req.params.date,
       locationId: req.params.locationId,
       status: req.body.status,
       comment: String(req.body.comment || ""),
-      expectedVersion: catalogQueries.dayRevision(req.params.date, req.params.locationId)
+      expectedVersion: staffQueries.dayRevision(req.params.date, req.params.locationId)
     }));
     return;
   }
@@ -1276,16 +1511,18 @@ app.put("/api/schedule/days/:date/:locationId", asyncRoute((req, res) => {
   res.json(day);
 }));
 
-app.get("/api/schedule/export", asyncRoute((req, res) => {
+app.get("/api/schedule/export", asyncRoute(async (req, res) => {
   const user = actor(req);
   const from = String(req.query.from || "");
   const to = String(req.query.to || "");
   const format = String(req.query.format || "csv");
   const locationId = req.query.locationId ? String(req.query.locationId) : undefined;
-  const rows = catalogQueries
+  const rows = staffClient
+    ? await staffClient.schedule({from,to})
+    : staffQueries
     ? (() => {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) throw new DomainError("BAD_EXPORT_RANGE", "Неверный диапазон дат");
-      return catalogQueries.shifts({ from, to }).filter((shift) => !locationId || shift.locationId === locationId);
+      return staffQueries.shifts({ from, to }).filter((shift) => !locationId || shift.locationId === locationId);
     })()
     : scheduleExportRows(user, from, to, locationId);
   const sqlLocations = catalogQueries ? new Map(catalogQueries.locations().map((location) => [location.id, location.name])) : undefined;
@@ -1305,28 +1542,73 @@ app.get("/api/schedule/export", asyncRoute((req, res) => {
   throw new DomainError("BAD_EXPORT_FORMAT", "Поддерживаются только CSV и PDF");
 }));
 
-app.post("/api/schedule/rotation/preview", asyncRoute((req, res) => {
+app.post("/api/schedule/rotation/preview", asyncRoute(async (req, res) => {
   const user = actor(req);
+  if (staffClient) {
+    requirePermission(user, "schedule:manage");
+    for (const id of Array.isArray(req.body.employeeIds) ? req.body.employeeIds.map(String) : []) {
+      const target = identityQueryService?.findById(id);
+      if (!target) throw new DomainError("USER_NOT_FOUND", "Пользователь не найден", 404);
+      await staffClient.syncIdentity({ userId: target.id, status: target.status });
+    }
+    res.json(await staffClient.previewRotation(req.body));
+    return;
+  }
   res.json(previewRotation(user, req.body));
 }));
 
-app.post("/api/schedule/rotation/commit", asyncRoute((req, res) => {
+app.post("/api/schedule/rotation/commit", asyncRoute(async (req, res) => {
   const user = actor(req);
-  res.status(201).json(commitRotation(user, { ...req.body, idempotencyKey: String(req.header("idempotency-key") || req.body.idempotencyKey || "") }));
+  const input = { ...req.body, idempotencyKey: String(req.header("idempotency-key") || req.body.idempotencyKey || "") };
+  if (staffClient) {
+    requirePermission(user, "schedule:manage");
+    if (!input.idempotencyKey) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", "Требуется Idempotency-Key", 400);
+    for (const id of Array.isArray(req.body.employeeIds) ? req.body.employeeIds.map(String) : []) {
+      const target = identityQueryService?.findById(id);
+      if (!target) throw new DomainError("USER_NOT_FOUND", "Пользователь не найден", 404);
+      await staffClient.syncIdentity({ userId: target.id, status: target.status });
+    }
+    res.status(201).json(await staffClient.commitRotation(input));
+    return;
+  }
+  res.status(201).json(commitRotation(user, input));
 }));
 
-app.post("/api/schedule/future-replacement/preview", asyncRoute((req, res) => {
+app.post("/api/schedule/future-replacement/preview", asyncRoute(async (req, res) => {
   const user = actor(req);
+  if (staffClient) {
+    requirePermission(user, "schedule:manage");
+    for (const id of [String(req.body.fromUserId || ""), String(req.body.toUserId || "")]) {
+      const target = identityQueryService?.findById(id);
+      if (!target) throw new DomainError("USER_NOT_FOUND", "Пользователь не найден", 404);
+      await staffClient.syncIdentity({ userId: target.id, status: target.status });
+    }
+    res.json(await staffClient.previewFutureReplacement(req.body));
+    return;
+  }
   res.json(previewFutureReplacement(user, req.body));
 }));
 
-app.post("/api/schedule/future-replacement/commit", asyncRoute((req, res) => {
+app.post("/api/schedule/future-replacement/commit", asyncRoute(async (req, res) => {
   const user = actor(req);
-  res.json(commitFutureReplacement(user, { ...req.body, idempotencyKey: String(req.header("idempotency-key") || req.body.idempotencyKey || "") }));
+  const input = { ...req.body, idempotencyKey: String(req.header("idempotency-key") || req.body.idempotencyKey || "") };
+  if (staffClient) {
+    requirePermission(user, "schedule:manage");
+    if (!input.idempotencyKey) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", "Требуется Idempotency-Key", 400);
+    for (const id of [String(req.body.fromUserId || ""), String(req.body.toUserId || "")]) {
+      const target = identityQueryService?.findById(id);
+      if (!target) throw new DomainError("USER_NOT_FOUND", "Пользователь не найден", 404);
+      await staffClient.syncIdentity({ userId: target.id, status: target.status });
+    }
+    res.json(await staffClient.commitFutureReplacement(input));
+    return;
+  }
+  res.json(commitFutureReplacement(user, input));
 }));
 
-app.post("/api/schedule", asyncRoute((req, res) => {
+app.post("/api/schedule", asyncRoute(async (req, res) => {
   const user = actor(req);
+  if(staffClient){ const employeeIds=Array.isArray(req.body.employeeIds)?req.body.employeeIds.map(String):[]; for(const id of employeeIds){const target=identityQueryService?.findById(id);if(!target)throw new DomainError("USER_NOT_FOUND","Пользователь не найден",404);await staffClient.syncIdentity({userId:target.id,status:target.status});} const idempotencyKey=req.header("idempotency-key")?.trim();if(!idempotencyKey)throw new DomainError("IDEMPOTENCY_KEY_REQUIRED","Требуется Idempotency-Key",400);res.status(201).json(await staffClient.saveShift({date:String(req.body.date||""),start:String(req.body.start||""),end:String(req.body.end||""),locationId:String(req.body.locationId||""),employeeIds,status:req.body.status,comment:String(req.body.comment||""),expectedVersion:null,idempotencyKey}));return;}
   if (scheduleService) {
     commandResponse(res, scheduleService.saveShift(identityMetadata(req, user), {
       date: String(req.body.date || ""),
@@ -1353,10 +1635,11 @@ app.post("/api/schedule", asyncRoute((req, res) => {
   res.status(201).json(shift);
 }));
 
-app.patch("/api/schedule/:id", asyncRoute((req, res) => {
+app.patch("/api/schedule/:id", asyncRoute(async (req, res) => {
   const user = actor(req);
-  if (scheduleService && catalogQueries) {
-    const current = catalogQueries.shiftForWrite(req.params.id);
+  if(staffClient){const current=(await staffClient.schedule({})).find((shift)=>shift.id===req.params.id);if(!current)throw new DomainError("NOT_FOUND","Смена не найдена",404);const employeeIds=Array.isArray(req.body.employeeIds)?req.body.employeeIds.map(String):current.employeeIds;for(const id of employeeIds){const target=identityQueryService?.findById(id);if(!target)throw new DomainError("USER_NOT_FOUND","Пользователь не найден",404);await staffClient.syncIdentity({userId:target.id,status:target.status});}const idempotencyKey=req.header("idempotency-key")?.trim();if(!idempotencyKey)throw new DomainError("IDEMPOTENCY_KEY_REQUIRED","Требуется Idempotency-Key",400);res.json(await staffClient.saveShift({id:current.id,date:req.body.date===undefined?current.date:String(req.body.date),start:req.body.start===undefined?current.start:String(req.body.start),end:req.body.end===undefined?current.end:String(req.body.end),locationId:req.body.locationId===undefined?current.locationId:String(req.body.locationId),employeeIds,status:req.body.status===undefined?current.status:req.body.status,comment:req.body.comment===undefined?current.comment:String(req.body.comment),expectedVersion:current.version,idempotencyKey}));return;}
+  if (scheduleService && staffQueries) {
+    const current = staffQueries.shiftForWrite(req.params.id);
     if (!current) throw new DomainError("NOT_FOUND", "Смена не найдена", 404);
     commandResponse(res, scheduleService.saveShift(identityMetadata(req, user), {
       id: current.shift.id,
@@ -1376,10 +1659,11 @@ app.patch("/api/schedule/:id", asyncRoute((req, res) => {
   res.json(shift);
 }));
 
-app.post("/api/schedule/:id/copy", asyncRoute((req, res) => {
+app.post("/api/schedule/:id/copy", asyncRoute(async (req, res) => {
   const user = actor(req);
-  if (scheduleService && catalogQueries) {
-    const source = catalogQueries.shiftForWrite(req.params.id);
+  if(staffClient){const source=(await staffClient.schedule({})).find((shift)=>shift.id===req.params.id);if(!source)throw new DomainError("NOT_FOUND","Смена не найдена",404);for(const id of source.employeeIds){const target=identityQueryService?.findById(id);if(target)await staffClient.syncIdentity({userId:target.id,status:target.status});}const idempotencyKey=req.header("idempotency-key")?.trim();if(!idempotencyKey)throw new DomainError("IDEMPOTENCY_KEY_REQUIRED","Требуется Idempotency-Key",400);res.status(201).json(await staffClient.saveShift({date:String(req.body.date||""),start:source.start,end:source.end,locationId:source.locationId,employeeIds:source.employeeIds,status:source.status==="scheduled"||source.status==="draft"?source.status:"draft",comment:source.comment,expectedVersion:null,idempotencyKey}));return;}
+  if (scheduleService && staffQueries) {
+    const source = staffQueries.shiftForWrite(req.params.id);
     if (!source) throw new DomainError("NOT_FOUND", "Смена не найдена", 404);
     commandResponse(res, scheduleService.saveShift(identityMetadata(req, user), {
       date: String(req.body.date || ""), start: source.shift.start, end: source.shift.end,
@@ -1399,14 +1683,31 @@ app.get("/api/staff", asyncRoute((req, res) => {
   res.json(identityQueryService?.listActive() ?? legacyState.users.filter((user) => user.status === "active"));
 }));
 
-app.get("/api/staff/profiles", asyncRoute((req, res) => {
+app.get("/api/staff/profiles", asyncRoute(async (req, res) => {
   const user = actor(req);
   requirePermission(user, "staff:manage");
-  res.json(catalogQueries?.employeeProfiles() ?? []);
+  if (staffClient) { res.json(await staffClient.profiles()); return; }
+  res.json(staffQueries?.employeeProfiles() ?? []);
 }));
 
-app.put("/api/staff/:id/profile", asyncRoute((req, res) => {
+app.get("/api/staff/status", asyncRoute(async (req,res)=>{
+  const user=actor(req); requirePermission(user,"staff:manage");
+  if(!staffClient) throw new DomainError("STAFF_UNAVAILABLE","Сервис сотрудников отключён",503);
+  res.json(await staffClient.status());
+}));
+
+app.put("/api/staff/:id/profile", asyncRoute(async (req, res) => {
   const user = actor(req);
+  requirePermission(user, "staff:manage");
+  if (staffClient) {
+    const target = identityQueryService?.findById(req.params.id);
+    if (!target) throw new DomainError("USER_NOT_FOUND", "Пользователь не найден", 404);
+    const idempotencyKey = req.header("idempotency-key")?.trim();
+    if (!idempotencyKey) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", "Требуется Idempotency-Key", 400);
+    await staffClient.syncIdentity({ userId: target.id, status: target.status });
+    res.json(await staffClient.saveProfile(req.params.id, { personnelNumber: req.body.personnelNumber, position: String(req.body.position || ""), hiredOn: String(req.body.hiredOn || ""), dismissedOn: req.body.dismissedOn ? String(req.body.dismissedOn) : undefined, status: req.body.status, expectedVersion: req.body.expectedVersion === undefined ? undefined : Number(req.body.expectedVersion), idempotencyKey }));
+    return;
+  }
   if (!staffScheduleService) throw new DomainError("SERVICE_UNAVAILABLE", "Сервис сотрудников недоступен", 503);
   commandResponse(res, staffScheduleService.saveProfile(identityMetadata(req, user), req.params.id, {
     personnelNumber: req.body.personnelNumber,
@@ -1418,18 +1719,29 @@ app.put("/api/staff/:id/profile", asyncRoute((req, res) => {
   }));
 }));
 
-app.get("/api/hr-events", asyncRoute((req, res) => {
+app.get("/api/hr-events", asyncRoute(async (req, res) => {
   const user = actor(req);
   requirePermission(user, "staff:manage");
-  res.json(catalogQueries?.hrEvents({
+  if (staffClient) { res.json(await staffClient.hrEvents({ ...(typeof req.query.userId === "string" ? { userId: req.query.userId } : {}), ...(typeof req.query.from === "string" ? { from: req.query.from } : {}), ...(typeof req.query.to === "string" ? { to: req.query.to } : {}) })); return; }
+  res.json(staffQueries?.hrEvents({
     ...(typeof req.query.userId === "string" ? { userId: req.query.userId } : {}),
     ...(typeof req.query.from === "string" ? { from: req.query.from } : {}),
     ...(typeof req.query.to === "string" ? { to: req.query.to } : {})
   }) ?? []);
 }));
 
-app.post("/api/hr-events", asyncRoute((req, res) => {
+app.post("/api/hr-events", asyncRoute(async (req, res) => {
   const user = actor(req);
+  requirePermission(user, "staff:manage");
+  if (staffClient) {
+    const userId = String(req.body.userId || ""); const target = identityQueryService?.findById(userId);
+    if (!target) throw new DomainError("USER_NOT_FOUND", "Пользователь не найден", 404);
+    const idempotencyKey = req.header("idempotency-key")?.trim();
+    if (!idempotencyKey) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", "Требуется Idempotency-Key", 400);
+    await staffClient.syncIdentity({ userId: target.id, status: target.status });
+    res.status(201).json(await staffClient.recordHrEvent({ userId, type: req.body.type, startDate: String(req.body.startDate || ""), endDate: req.body.endDate ? String(req.body.endDate) : undefined, shiftId: req.body.shiftId ? String(req.body.shiftId) : undefined, minutesLate: req.body.minutesLate === undefined ? undefined : Number(req.body.minutesLate), comment: String(req.body.comment || ""), actorId: user.id, idempotencyKey }));
+    return;
+  }
   if (!staffScheduleService) throw new DomainError("SERVICE_UNAVAILABLE", "Сервис кадровых событий недоступен", 503);
   commandResponse(res, staffScheduleService.recordHrEvent(identityMetadata(req, user), {
     userId: String(req.body.userId || ""),
@@ -1442,13 +1754,15 @@ app.post("/api/hr-events", asyncRoute((req, res) => {
   }));
 }));
 
-app.get("/api/schedule/exchanges", asyncRoute((req, res) => {
+app.get("/api/schedule/exchanges", asyncRoute(async (req, res) => {
   const user = actor(req);
-  res.json(catalogQueries?.exchanges(hasPermission(user, "schedule:manage") ? undefined : user.id) ?? []);
+  if(staffClient){res.json(await staffClient.exchanges(hasPermission(user,"schedule:manage")?undefined:user.id));return;}
+  res.json(staffQueries?.exchanges(hasPermission(user, "schedule:manage") ? undefined : user.id) ?? []);
 }));
 
-app.post("/api/schedule/exchanges", asyncRoute((req, res) => {
+app.post("/api/schedule/exchanges", asyncRoute(async (req, res) => {
   const user = actor(req);
+  if(staffClient){const idempotencyKey=req.header("idempotency-key")?.trim();if(!idempotencyKey)throw new DomainError("IDEMPOTENCY_KEY_REQUIRED","Требуется Idempotency-Key",400);res.status(201).json(await staffClient.createExchange({fromShiftId:String(req.body.fromShiftId||""),toShiftId:String(req.body.toShiftId||""),actorId:user.id,idempotencyKey}));return;}
   if (!staffScheduleService) throw new DomainError("SERVICE_UNAVAILABLE", "Сервис обменов недоступен", 503);
   commandResponse(res, staffScheduleService.createExchange(identityMetadata(req, user), {
     fromShiftId: String(req.body.fromShiftId || ""),
@@ -1456,18 +1770,20 @@ app.post("/api/schedule/exchanges", asyncRoute((req, res) => {
   }));
 }));
 
-app.post("/api/schedule/exchanges/:id/:action", asyncRoute((req, res) => {
+app.post("/api/schedule/exchanges/:id/:action", asyncRoute(async (req, res) => {
   const user = actor(req);
-  if (!staffScheduleService) throw new DomainError("SERVICE_UNAVAILABLE", "Сервис обменов недоступен", 503);
   const action = req.params.action;
   if (action !== "accept" && action !== "decline" && action !== "cancel") throw new DomainError("BAD_ACTION", "Некорректное действие", 400);
+  if(staffClient){const idempotencyKey=req.header("idempotency-key")?.trim();if(!idempotencyKey)throw new DomainError("IDEMPOTENCY_KEY_REQUIRED","Требуется Idempotency-Key",400);res.json(await staffClient.resolveExchange(req.params.id,action,{actorId:user.id,idempotencyKey}));return;}
+  if (!staffScheduleService) throw new DomainError("SERVICE_UNAVAILABLE", "Сервис обменов недоступен", 503);
   commandResponse(res, staffScheduleService.resolveExchange(identityMetadata(req, user), req.params.id, action));
 }));
 
 app.get("/api/schedule/swaps", asyncRoute((req, res) => {
   const user = actor(req);
-  if (catalogQueries) {
-    res.json(catalogQueries.swaps(hasPermission(user, "schedule:manage") ? {} : { userId: user.id }));
+  if (staffClient) throw new DomainError("FEATURE_REPLACED", "Используйте обмены смен", 410);
+  if (staffQueries) {
+    res.json(staffQueries.swaps(hasPermission(user, "schedule:manage") ? {} : { userId: user.id }));
     return;
   }
   refreshScheduleState();
@@ -1476,6 +1792,7 @@ app.get("/api/schedule/swaps", asyncRoute((req, res) => {
 
 app.post("/api/schedule/swaps", asyncRoute((req, res) => {
   const user = actor(req);
+  if (staffClient) throw new DomainError("FEATURE_REPLACED", "Используйте обмены смен", 410);
   if (scheduleService) {
     commandResponse(res, scheduleService.createSwap(identityMetadata(req, user), {
       shiftId: String(req.body.fromShiftId || ""), toUserId: String(req.body.toUserId || "")
@@ -1489,6 +1806,7 @@ app.post("/api/schedule/swaps", asyncRoute((req, res) => {
 
 app.post("/api/schedule/swaps/:id/accept", asyncRoute((req, res) => {
   const user = actor(req);
+  if (staffClient) throw new DomainError("FEATURE_REPLACED", "Используйте обмены смен", 410);
   if (scheduleService) {
     commandResponse(res, scheduleService.resolveSwap(identityMetadata(req, user), { swapId: req.params.id, action: "accept" }));
     return;
@@ -1499,6 +1817,7 @@ app.post("/api/schedule/swaps/:id/accept", asyncRoute((req, res) => {
 
 app.post("/api/schedule/swaps/:id/decline", asyncRoute((req, res) => {
   const user = actor(req);
+  if (staffClient) throw new DomainError("FEATURE_REPLACED", "Используйте обмены смен", 410);
   if (scheduleService) {
     commandResponse(res, scheduleService.resolveSwap(identityMetadata(req, user), { swapId: req.params.id, action: "decline" }));
     return;
@@ -1509,6 +1828,7 @@ app.post("/api/schedule/swaps/:id/decline", asyncRoute((req, res) => {
 
 app.post("/api/schedule/swaps/:id/cancel", asyncRoute((req, res) => {
   const user = actor(req);
+  if (staffClient) throw new DomainError("FEATURE_REPLACED", "Используйте обмены смен", 410);
   if (scheduleService) {
     commandResponse(res, scheduleService.resolveSwap(identityMetadata(req, user), { swapId: req.params.id, action: "cancel" }));
     return;
@@ -1676,10 +1996,24 @@ app.get("/api/merges", asyncRoute((req, res) => {
   res.json(legacyState.merges.slice(0, 50));
 }));
 
-app.post("/api/labels/preview", asyncRoute((req, res) => {
+app.get("/api/labels/products", asyncRoute(async (req, res) => {
   const user = actor(req);
   requirePermission(user, "labels:print");
-  const job = labelJobFromBody(user, req.body);
+  const products = (await warehouseLabelCatalog())
+    .filter((product) => product.status === "active")
+    .map((product) => ({
+      id: product.id,
+      officialName: product.officialName,
+      localName: product.localName,
+      manufacturer: labelManufacturer(product.officialName)
+    }));
+  res.json({ items: products });
+}));
+
+app.post("/api/labels/preview", asyncRoute(async (req, res) => {
+  const user = actor(req);
+  requirePermission(user, "labels:print");
+  const job = await labelJobFromBody(user, req.body);
   const expandedLabels = expandLabels(job.labels);
   res.json({
     geometry: job.geometry,
@@ -1690,10 +2024,10 @@ app.post("/api/labels/preview", asyncRoute((req, res) => {
   });
 }));
 
-app.post("/api/labels/pdf", asyncRoute((req, res) => {
+app.post("/api/labels/pdf", asyncRoute(async (req, res) => {
   const user = actor(req);
   requirePermission(user, "labels:print");
-  const job = labelJobFromBody(user, req.body);
+  const job = await labelJobFromBody(user, req.body);
   if (expandLabels(job.labels).length > job.geometry.labelsPerPage) throw new DomainError("LABELS_OVERFLOW", "Этикетки не помещаются на одну страницу");
   if (artifactService) {
     const result = artifactService.createLabel(identityMetadata(req, user), job);
@@ -1709,6 +2043,19 @@ app.post("/api/labels/pdf", asyncRoute((req, res) => {
   renderLabelsPdf(res, job);
 }));
 
+app.post("/api/labels/jobs", asyncRoute(async (req, res) => {
+  const user = actor(req);
+  requirePermission(user, "labels:print");
+  const job = await labelJobFromBody(user, req.body);
+  if (artifactService) {
+    commandResponse(res, artifactService.createLabel(identityMetadata(req, user), job));
+    return;
+  }
+  legacyState.labelJobs.unshift(job);
+  audit(user.id, "label_job", job.id, "create", { labels: expandLabels(job.labels).length, templateId: job.templateId, geometry: job.geometry });
+  res.status(201).json(job);
+}));
+
 app.get("/api/labels/jobs", asyncRoute((req, res) => {
   const user = actor(req);
   requirePermission(user, "labels:print");
@@ -1717,6 +2064,19 @@ app.get("/api/labels/jobs", asyncRoute((req, res) => {
     return;
   }
   res.json(legacyState.labelJobs.slice(0, 50));
+}));
+
+app.post("/api/labels/jobs/:id/reprint", asyncRoute((req, res) => {
+  const user = actor(req);
+  requirePermission(user, "labels:print");
+  if (artifactService) {
+    commandResponse(res, artifactService.recordLabelReprint(identityMetadata(req, user), req.params.id));
+    return;
+  }
+  const job = legacyState.labelJobs.find((item) => item.id === req.params.id);
+  if (!job) throw new DomainError("NOT_FOUND", "Задание печати не найдено", 404);
+  audit(user.id, "label_job", job.id, "reprint", { labels: expandLabels(job.labels).length });
+  res.json(job);
 }));
 
 app.post("/api/labels/jobs/:id/pdf", asyncRoute((req, res) => {
@@ -1795,6 +2155,7 @@ function shutdown(signal: NodeJS.Signals) {
   console.log(JSON.stringify({ event: "shutdown", signal }));
   const timeout = setTimeout(() => {
     server.closeAllConnections();
+    try { warehouseDatabase?.close(); } catch { /* process exits non-zero below */ }
     try { sessionDatabase?.close(); } catch { /* process exits non-zero below */ }
     try { closeDatabase(); } catch { /* process exits non-zero below */ }
     process.exitCode = 1;
@@ -1804,6 +2165,7 @@ function shutdown(signal: NodeJS.Signals) {
     clearTimeout(timeout);
     try {
       await closeRuntime();
+      warehouseDatabase?.close();
       sessionDatabase?.close();
       closeDatabase();
     } catch {

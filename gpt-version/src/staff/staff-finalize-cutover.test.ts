@@ -1,0 +1,22 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { openDatabase } from "../server/database";
+import { applyMigrations } from "../server/migrations";
+import { buildNormalizedStateSql } from "../server/state-migration";
+import { createSeedState } from "../server/store";
+
+const root=fs.mkdtempSync(path.join(os.tmpdir(),"dvorik-staff-finalize-"));
+const coreFile=path.join(root,"core.sqlite");const staffFile=path.join(root,"staff.sqlite");
+const core=openDatabase(coreFile);core.executeScript("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL); INSERT INTO schema_migrations VALUES (1,datetime('now')); ");applyMigrations(core);core.executeScript(buildNormalizedStateSql(createSeedState()));core.close();
+const environment={...process.env,DVORIK_SQLITE_FILE:coreFile,DVORIK_STAFF_SQLITE_FILE:staffFile};
+const migrated=spawnSync(process.execPath,["--import","tsx",path.resolve("src/staff/migrate-from-core.ts")],{cwd:process.cwd(),env:environment,encoding:"utf8"});assert.equal(migrated.status,0,migrated.stderr);
+const finalized=spawnSync(process.execPath,["--import","tsx",path.resolve("src/staff/finalize-core-cutover.ts")],{cwd:process.cwd(),env:{...environment,DVORIK_STAFF_FINALIZE:"1"},encoding:"utf8"});assert.equal(finalized.status,0,finalized.stderr);
+const checked=openDatabase(coreFile,{fileMustExist:true});
+assert.equal(checked.query<{count:number}>("SELECT count(*) count FROM sqlite_master WHERE type='table' AND name='employee_profiles'")[0].count,0);
+assert.equal(checked.query<{count:number}>("SELECT count(*) count FROM sqlite_master WHERE type='table' AND name LIKE 'employee_profiles_archive_%'")[0].count,1);
+checked.close();
+const denied=spawnSync(process.execPath,["--import","tsx",path.resolve("src/staff/finalize-core-cutover.ts")],{cwd:process.cwd(),env:environment,encoding:"utf8"});assert.notEqual(denied.status,0);assert.match(denied.stderr,/DVORIK_STAFF_FINALIZE/);
+console.log("staff finalize cutover tests passed");

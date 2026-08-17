@@ -6,6 +6,7 @@ assert.match(requestCorrelationId("bad value"), /^http:/);
 assert.equal(safeLogPath("/api/saby/webhook/very-secret"), "/api/saby/webhook/[redacted]");
 assert.equal(securityHeaders(true)["X-Frame-Options"], "DENY");
 assert.match(String(securityHeaders(true)["Content-Security-Policy"]), /frame-ancestors 'none'/);
+assert.equal(securityHeaders(true)["Permissions-Policy"], "camera=(self), microphone=(), geolocation=()");
 assert.equal("Strict-Transport-Security" in securityHeaders(false), false);
 const metrics = createHttpMetrics();
 metrics.begin();

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { EmployeeProfile, HrEvent, HrEventType, Role, User, UserStatus } from "../../../shared/types";
 import type { PageProps } from "../appTypes";
 import { permissionLabels, roleLabels, userStatusLabels } from "../constants";
-import { DataTable, Field, Metric, Notice, PageHeader, Panel, Skeleton, StatusBadge, Toolbar, toSearchText, useConfirm } from "../ui";
+import { ActionMenu, DataTable, Drawer, Field, Metric, Notice, PageHeader, Panel, Skeleton, StatusBadge, Toolbar, toSearchText, useConfirm } from "../ui";
 
 export function UsersPage({ client, session }: PageProps) {
   const [section, setSection] = useState<"staff" | "events" | "permissions">("staff");
@@ -17,6 +17,7 @@ export function UsersPage({ client, session }: PageProps) {
   const [loading, setLoading] = useState(true);
   const [workingId, setWorkingId] = useState("");
   const [message, setMessage] = useState("");
+  const [selectedUserId, setSelectedUserId] = useState("");
   const canManage = session.permissions.includes("users:manage");
   const canRoles = session.permissions.includes("roles:manage");
   const canStaff = session.permissions.includes("staff:manage");
@@ -53,6 +54,12 @@ export function UsersPage({ client, session }: PageProps) {
     const matchesRole = role === "all" || user.role === role;
     return matchesQuery && matchesStatus && matchesRole;
   }), [q, role, status, users]);
+  const selectedUser = users.find((user) => user.id === selectedUserId);
+  const openUser = (user: User) => {
+    setSelectedUserId(user.id);
+    const current = profiles.find((item) => item.userId === user.id);
+    setProfileForm(current ? { userId: user.id, personnelNumber: current.personnelNumber || "", position: current.position, hiredOn: current.hiredOn, status: current.status, dismissedOn: current.dismissedOn || "" } : { ...profileForm, userId: user.id });
+  };
 
   const patchUser = async (user: User, patch: Partial<Pick<User, "status" | "role">>) => {
     const statusAction = patch.status === "blocked" ? "Пользователь будет заблокирован, все активные сессии будут немедленно отозваны." : patch.status === "archived" ? "Пользователь будет перемещён в архив и потеряет доступ." : patch.status === "rejected" ? "Запрос на доступ будет отклонён." : "Активные сессии пользователя будут отозваны.";
@@ -121,7 +128,7 @@ export function UsersPage({ client, session }: PageProps) {
         <Metric title="Заблокированы" value={users.filter((user) => user.status === "blocked").length} tone="warn" />
       </div>
 
-      {users.some((user) => user.status === "pending") && <Panel title={`Ожидают подтверждения · ${users.filter((user) => user.status === "pending").length}`} className="attention-panel"><div className="pending-users">{users.filter((user) => user.status === "pending").map((user) => <div className="pending-user" key={user.id}><strong>{user.firstName} {user.lastName}</strong><span>@{user.username || "без username"}</span><div className="inline-actions"><button onClick={() => patchUser(user, { status: "active" })}>Активировать</button><button className="danger-secondary" onClick={() => patchUser(user, { status: "rejected" })}>Отклонить</button></div></div>)}</div></Panel>}
+      {users.some((user) => user.status === "pending") && <Panel title={`Ожидают подтверждения · ${users.filter((user) => user.status === "pending").length}`} className="attention-panel"><div className="pending-users">{users.filter((user) => user.status === "pending").map((user) => <button className="pending-user" key={user.id} onClick={() => openUser(user)}><strong>{user.firstName} {user.lastName}</strong><span>@{user.username || "без username"}</span><StatusBadge tone="warn">Требует решения</StatusBadge></button>)}</div></Panel>}
 
       <Panel title="Сотрудники" className="primary-panel">
         <Toolbar>
@@ -139,27 +146,16 @@ export function UsersPage({ client, session }: PageProps) {
           rows={filteredUsers}
           empty="Пользователи не найдены"
           columns={[
-            { key: "name", header: "Сотрудник", render: (row) => `${row.firstName} ${row.lastName}` },
+            { key: "name", header: "Сотрудник", render: (row) => <button className="link-button" onClick={() => openUser(row)}>{row.firstName} {row.lastName}</button> },
             { key: "telegram", header: "Telegram", render: (row) => `@${row.username} · ${row.telegramUserId}` },
             { key: "role", header: "Роль", render: (row) => roleLabels[row.role] },
             { key: "status", header: "Статус", render: (row) => <StatusBadge tone={row.status === "active" ? "good" : row.status === "blocked" ? "danger" : "neutral"}>{userStatusLabels[row.status]}</StatusBadge> },
-            { key: "permissions", header: "Права", render: (row) => <span className="permission-tags">{row.permissions.map((permission) => <span key={permission}>{permissionLabels[permission]}</span>)}</span> },
-            { key: "actions", header: "Действия", render: (row) => <UserActions user={row} working={workingId === row.id} disabled={!canManage} canRoles={canRoles} onStatus={(nextStatus) => patchUser(row, { status: nextStatus })} onRole={(nextRole) => patchUser(row, { role: nextRole })} /> }
+            { key: "actions", header: "Действия", render: (row) => <ActionMenu label={`Действия с ${row.firstName}`}><button className="secondary small" onClick={() => openUser(row)}>Открыть карточку</button></ActionMenu> }
           ]}
         />
       </Panel>
 
-      {canStaff && <Panel title="Профиль сотрудника" description="Должность и даты занятости. Зарплатных полей здесь нет.">
-        <div className="form-grid">
-          <Field label="Сотрудник"><select value={profileForm.userId} onChange={(event) => { const userId = event.target.value; const current = profiles.find((item) => item.userId === userId); setProfileForm(current ? { userId, personnelNumber: current.personnelNumber || "", position: current.position, hiredOn: current.hiredOn, status: current.status, dismissedOn: current.dismissedOn || "" } : { ...profileForm, userId }); }}>{users.map((user) => <option key={user.id} value={user.id}>{user.firstName} {user.lastName}</option>)}</select></Field>
-          <Field label="Табельный номер"><input value={profileForm.personnelNumber} onChange={(event) => setProfileForm({ ...profileForm, personnelNumber: event.target.value })} /></Field>
-          <Field label="Должность"><input value={profileForm.position} onChange={(event) => setProfileForm({ ...profileForm, position: event.target.value })} /></Field>
-          <Field label="Дата приёма"><input type="date" value={profileForm.hiredOn} onChange={(event) => setProfileForm({ ...profileForm, hiredOn: event.target.value })} /></Field>
-          <Field label="Статус"><select value={profileForm.status} onChange={(event) => setProfileForm({ ...profileForm, status: event.target.value as EmployeeProfile["status"], dismissedOn: event.target.value === "active" ? "" : profileForm.dismissedOn })}><option value="active">Работает</option><option value="dismissed">Уволен</option></select></Field>
-          {profileForm.status === "dismissed" && <Field label="Дата увольнения"><input type="date" value={profileForm.dismissedOn} onChange={(event) => setProfileForm({ ...profileForm, dismissedOn: event.target.value })} /></Field>}
-        </div>
-        <button onClick={saveProfile} disabled={!profileForm.userId}>Сохранить профиль</button>
-      </Panel>}</>}
+      </>}
 
       {section === "events" && canStaff && <Panel title="Кадровые события" description="Отпуск, больничный, опоздание, невыход и неполная смена без расчёта денег.">
         <div className="form-grid">
@@ -186,6 +182,15 @@ export function UsersPage({ client, session }: PageProps) {
           ))}
         </div>
       </Panel>}
+      <Drawer open={Boolean(selectedUser)} onClose={() => setSelectedUserId("")} title={selectedUser ? `${selectedUser.firstName} ${selectedUser.lastName}` : "Сотрудник"}>
+        {selectedUser && <div className="stack">
+          <div className="inline-actions"><StatusBadge tone={selectedUser.status === "active" ? "good" : selectedUser.status === "blocked" ? "danger" : "warn"}>{userStatusLabels[selectedUser.status]}</StatusBadge><span>{roleLabels[selectedUser.role]}</span></div>
+          <div className="permission-tags">{selectedUser.permissions.map((permission) => <span key={permission}>{permissionLabels[permission] || "Дополнительное право"}</span>)}</div>
+          {canRoles && <Field label="Роль"><select value={selectedUser.role} onChange={(event) => void patchUser(selectedUser, { role: event.target.value as Role })}>{Object.entries(roleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>}
+          {canStaff && <><Field label="Табельный номер"><input value={profileForm.personnelNumber} onChange={(event) => setProfileForm({ ...profileForm, personnelNumber: event.target.value })} /></Field><Field label="Должность"><input value={profileForm.position} onChange={(event) => setProfileForm({ ...profileForm, position: event.target.value })} /></Field><Field label="Дата приёма"><input type="date" value={profileForm.hiredOn} onChange={(event) => setProfileForm({ ...profileForm, hiredOn: event.target.value })} /></Field><button onClick={saveProfile}>Сохранить профиль</button></>}
+          <UserActions user={selectedUser} working={workingId === selectedUser.id} disabled={!canManage} canRoles={false} onStatus={(nextStatus) => patchUser(selectedUser, { status: nextStatus })} onRole={(nextRole) => patchUser(selectedUser, { role: nextRole })} />
+        </div>}
+      </Drawer>
       </section>
       {confirmDialog}
     </>
@@ -199,13 +204,13 @@ const hrEventLabels: Record<HrEventType, string> = {
 function UserActions({ user, working, disabled, canRoles, onStatus, onRole }: { user: User; working: boolean; disabled: boolean; canRoles: boolean; onStatus: (status: UserStatus) => void; onRole: (role: Role) => void }) {
   if (disabled) return <>—</>;
   return (
-    <details className="action-menu"><summary aria-label={`Действия с ${user.firstName}`}>⋯</summary><div className="action-menu-popover">
+    <ActionMenu label={`Опасные действия с ${user.firstName}`}>
       {user.status !== "active" && <button className="secondary small" disabled={working} onClick={() => onStatus("active")}>Активировать</button>}
       {user.status === "active" && <button className="danger small" disabled={working} onClick={() => onStatus("blocked")}>Заблокировать</button>}
       {user.status === "pending" && <button className="danger-secondary small" disabled={working} onClick={() => onStatus("rejected")}>Отклонить</button>}
       {user.status !== "archived" && user.status !== "active" && <button className="danger-secondary small" disabled={working} onClick={() => onStatus("archived")}>В архив</button>}
       {canRoles && user.role !== "seller" && <button className="secondary small" disabled={working} onClick={() => onRole("seller")}>Сделать продавцом</button>}
       {canRoles && user.role !== "admin" && <button className="secondary small" disabled={working} onClick={() => onRole("admin")}>Сделать админом</button>}
-    </div></details>
+    </ActionMenu>
   );
 }

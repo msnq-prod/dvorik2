@@ -3,12 +3,10 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 export type Tone = "neutral" | "good" | "warn" | "danger" | "info";
 
 export function PageHeader({ title, description, meta, actions }: { title: string; description?: string; meta?: ReactNode; actions?: ReactNode }) {
+  if (!meta && !actions) return null;
   return (
-    <div className="page-header" aria-label={`${title}: описание и действия`}>
-      <div>
-        {description && <p>{description}</p>}
-        {meta && <div className="page-meta">{meta}</div>}
-      </div>
+    <div className="page-header" aria-label={`${title}: действия`}>
+      {meta && <div className="page-meta">{meta}</div>}
       {actions && <div className="header-actions">{actions}</div>}
     </div>
   );
@@ -21,7 +19,6 @@ export function Panel({ title, description, actions, children, className = "" }:
         <div className="panel-head">
           <div>
             {title && <h2>{title}</h2>}
-            {description && <p>{description}</p>}
           </div>
           {actions && <div className="inline-actions">{actions}</div>}
         </div>
@@ -127,6 +124,55 @@ export function useConfirm() {
   ) : null;
 
   return { confirm, confirmDialog };
+}
+
+export function Drawer({ open, title, onClose, children, className = "" }: { open: boolean; title: string; onClose: () => void; children: ReactNode; className?: string }) {
+  const drawerRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+  useEffect(() => {
+    if (!open) return;
+    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeRef.current?.focus();
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { if (document.querySelector(".confirm-dialog")) return; event.preventDefault(); onCloseRef.current(); return; }
+      if (event.key !== "Tab" || !drawerRef.current) return;
+      const controls = Array.from(drawerRef.current.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])"));
+      if (!controls.length) return;
+      const first = controls[0]; const last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => { document.removeEventListener("keydown", onKeyDown); document.body.style.overflow = previousOverflow; queueMicrotask(() => openerRef.current?.focus()); };
+  }, [open]);
+  if (!open) return null;
+  return <div className="drawer-backdrop" role="presentation" onMouseDown={onClose}>
+    <aside ref={drawerRef} className={`app-drawer ${className}`} role="dialog" aria-modal="true" aria-labelledby="drawer-title" onMouseDown={(event) => event.stopPropagation()}>
+      <header className="drawer-head"><h2 id="drawer-title">{title}</h2><button ref={closeRef} className="icon-button secondary" onClick={onClose} aria-label="Закрыть">×</button></header>
+      <div className="drawer-body">{children}</div>
+    </aside>
+  </div>;
+}
+
+export function ActionMenu({ label, children, className = "" }: { label: string; children: ReactNode; className?: string }) {
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+  const summaryRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && detailsRef.current?.open) { if (document.querySelector(".confirm-dialog")) return; event.preventDefault(); detailsRef.current.open = false; summaryRef.current?.focus(); }
+    };
+    const onPointerDown = (event: MouseEvent) => {
+      if (detailsRef.current?.open && event.target instanceof Node && !detailsRef.current.contains(event.target)) detailsRef.current.open = false;
+    };
+    document.addEventListener("keydown", onKeyDown); document.addEventListener("mousedown", onPointerDown);
+    return () => { document.removeEventListener("keydown", onKeyDown); document.removeEventListener("mousedown", onPointerDown); };
+  }, []);
+  return <details ref={detailsRef} className={`action-menu ${className}`}><summary ref={summaryRef} aria-label={label}>⋯</summary><div className="action-menu-popover">{children}</div></details>;
 }
 
 export function EmptyState({ title = "Нет данных", description, action }: { title?: string; description?: string; action?: ReactNode }) {

@@ -28,6 +28,12 @@ const requiredColumns: Record<string, readonly string[]> = {
   ,employee_profiles: ["user_id", "position", "hired_on", "dismissed_on", "status", "version", "updated_at"]
   ,hr_events: ["user_id", "type", "start_date", "end_date", "shift_id", "minutes_late", "created_by_user_id"]
   ,shift_exchange_requests: ["from_shift_id", "to_shift_id", "from_user_id", "to_user_id", "from_shift_version", "to_shift_version", "warning_json", "version"]
+  ,supplies: ["supplier_id", "invoice_number", "delivered_at", "status", "accepted_by_user_id", "version"]
+  ,supply_lines: ["supply_id", "product_id", "package_count", "package_mass_grams", "purchase_cost_kopecks"]
+  ,inventory_lots: ["supply_line_id", "product_id", "received_package_milli", "remaining_package_milli", "package_mass_grams", "total_cost_kopecks", "version"]
+  ,fifo_allocations: ["event_id", "lot_id", "product_id", "quantity_package_milli", "cost_kopecks", "direction"]
+  ,integration_inbox: ["event_id", "producer", "event_type", "event_version", "payload_json", "status"]
+  ,product_profitability_projection: ["product_id", "actual_revenue_kopecks", "actual_cost_kopecks", "actual_completeness", "version"]
 };
 
 for (const [table, required] of Object.entries(requiredColumns)) {

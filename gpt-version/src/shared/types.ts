@@ -2,6 +2,7 @@ export type Role = "seller" | "admin" | "super_admin";
 export type Permission =
   | "products:read"
   | "products:write"
+  | "products:scan_manage"
   | "stock:move"
   | "inventory:write"
   | "reports:read"
@@ -171,6 +172,7 @@ export interface MovementReportRow {
 
 export interface Shift {
   id: string;
+  version?: number;
   date: string;
   start: string;
   end: string;
@@ -335,7 +337,8 @@ export interface LabelPrintJob {
     unit: Product["unit"];
     quantity: number;
     printedAt: string;
-    barcode: {
+    manufacturer?: string;
+    barcode?: {
       type: "code128" | "ean13";
       value: string;
       pattern: string;
@@ -356,6 +359,10 @@ export interface InventorySnapshotRow {
 export interface AppState {
   users: User[];
   products: Product[];
+  productGroups?: ProductGroup[];
+  manufacturers?: Manufacturer[];
+  packagings?: ProductPackaging[];
+  priceHistory?: ProductPriceHistory[];
   locations: Location[];
   balances: StockBalance[];
   operations: StockOperation[];

@@ -173,6 +173,7 @@ export const productMapper = {
   fromRow(row: DatabaseRow): ProductRow {
     const entity = "products";
     const unit = enumValue(entity, row, "unit", PRODUCT_UNITS);
+    const inventoryKind = row.inventory_kind === undefined ? "piece" : enumValue(entity, row, "inventory_kind", INVENTORY_KINDS);
     return {
       id: requiredId(entity, row, "id"),
       officialName: requiredString(entity, row, "official_name"),
@@ -185,11 +186,11 @@ export const productMapper = {
       lowStockThreshold: quantity(entity, row, {
         minorField: "low_stock_threshold_minor",
         realField: "low_stock_threshold",
-        unit
+        unit: inventoryKind === "weight" ? "шт" : unit
       }),
       groupId: nullableId(entity, row, "group_id"),
       manufacturerId: nullableId(entity, row, "manufacturer_id"),
-      inventoryKind: row.inventory_kind === undefined ? "piece" : enumValue(entity, row, "inventory_kind", INVENTORY_KINDS),
+      inventoryKind,
       packageMassGrams: row.package_mass_grams === null || row.package_mass_grams === undefined
         ? undefined
         : positiveNullableInteger(entity, row, "package_mass_grams"),
@@ -202,7 +203,7 @@ export const productMapper = {
 
   toRow(value: ProductRow): PersistedRow {
     const entity = "products";
-    const threshold = quantityColumns(value.lowStockThreshold, value.unit);
+    const threshold = quantityColumns(value.lowStockThreshold, value.inventoryKind === "weight" ? "шт" : value.unit);
     return {
       id: idForWrite(entity, value.id, "id", value.id),
       official_name: value.officialName,

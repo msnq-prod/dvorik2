@@ -1,12 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
+import { ImagePlus, Search } from "lucide-react";
 import type { Location, Manufacturer, Product, ProductGroup, ProductPackaging, ProductPriceHistory, ProductStatus, StockBalance } from "../../../shared/types";
+import type { ProductProfitability } from "../../../contracts/cash";
 import { MEDIA_UPLOAD_ALLOWED_TYPES, MEDIA_UPLOAD_MAX_LABEL, mediaUploadValidation } from "../../../shared/mediaUpload";
 import type { PageProps } from "../appTypes";
 import { productStatusLabels } from "../constants";
 import { formatIdentifiers, formatProductKind, formatProductQuantity } from "../presentation";
-import { DataTable, Field, Metric, Notice, PageHeader, Panel, Skeleton, StatusBadge, Toolbar, toSearchText, useConfirm } from "../ui";
+import { ActionMenu, Drawer, Field, Notice, Panel, Skeleton, StatusBadge, Toolbar, toSearchText, useConfirm } from "../ui";
 
 type ProductResponse = { items: Product[]; total: number; page: number; limit: number };
+type RuntimeCapabilities = { warehouseWriteMode: "legacy" | "fifo" };
+type WarehouseCatalogProduct = { id: string; officialName: string; localName: string; article: string; inventoryKind: "piece" | "weight"; packageMassGrams?: number; status: Product["status"] };
+type WarehouseBalance = { productId: string; accountingQuantityMinor: number; remainingPackageMilli: number; inventoryKind: "piece" | "weight"; packageMassGrams?: number };
 type MediaUploadResponse = { url: string; name: string; mimeType: string; bytes: number; originalBytes: number; compressed: boolean; storage: string };
 type ProductForm = {
   officialName: string;
@@ -57,6 +62,8 @@ export function ProductsPage({ client, session }: PageProps) {
   const [newManufacturerName, setNewManufacturerName] = useState("");
   const [packagings, setPackagings] = useState<ProductPackaging[]>([]);
   const [prices, setPrices] = useState<ProductPriceHistory[]>([]);
+  const [profitability, setProfitability] = useState<ProductProfitability | null>(null);
+  const [lots,setLots]=useState<Array<{id:string;receivedPackageMilli:number;remainingPackageMilli:number;packageMassGrams?:number;totalCostKopecks:number;receivedAt:string}>>([]);
   const [packagingName, setPackagingName] = useState("");
   const [priceRubles, setPriceRubles] = useState("");
   const [selected, setSelected] = useState<Product | null>(null);
@@ -66,8 +73,14 @@ export function ProductsPage({ client, session }: PageProps) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [catalogSection, setCatalogSection] = useState<"products" | "dictionaries">("products");
+  const [inventoryKind, setInventoryKind] = useState<"all" | "piece" | "weight">("all");
+  const [showIdentifiers, setShowIdentifiers] = useState(false);
+  const [uploadingProductId, setUploadingProductId] = useState("");
+  const [failedPhotoIds, setFailedPhotoIds] = useState<Set<string>>(() => new Set());
+  const [warehouseMode, setWarehouseMode] = useState(false);
   const isSeller = session.user.role === "seller";
-  const canWrite = session.permissions.includes("products:write");
+  const canWrite = session.permissions.includes("products:write") && !warehouseMode;
   const { confirm, confirmDialog } = useConfirm();
   const limit = 20;
 
@@ -75,13 +88,24 @@ export function ProductsPage({ client, session }: PageProps) {
     setLoading(true);
     setMessage("");
     try {
-      const [data, nextBalances, nextLocations, nextGroups, nextManufacturers] = await Promise.all([
-        client.request<ProductResponse>(`/api/products?q=${isSeller ? "" : encodeURIComponent(q)}&status=${isSeller ? "active" : status}&page=${nextPage}&limit=${isSeller ? 100 : limit}`),
-        isSeller ? client.request<StockBalance[]>("/api/balances") : Promise.resolve(balances),
-        isSeller ? client.request<Location[]>("/api/locations") : Promise.resolve(locations),
-        client.request<ProductGroup[]>("/api/product-groups"),
-        client.request<Manufacturer[]>("/api/manufacturers")
-      ]);
+      const capabilities = await client.request<RuntimeCapabilities>("/api/runtime/capabilities");
+      const fifo = capabilities.warehouseWriteMode === "fifo";
+      const [data, nextBalances, nextLocations, nextGroups, nextManufacturers] = fifo
+        ? await Promise.all([
+          client.request<WarehouseCatalogProduct[]>("/api/warehouse/catalog").then((items) => ({ items: items.map(warehouseProduct), total: items.length, page: 1, limit: items.length || limit })),
+          client.request<WarehouseBalance[]>("/api/warehouse/balances").then((items) => items.map((item) => ({ productId: item.productId, locationId: "warehouse-fifo", quantity: item.inventoryKind === "weight" ? item.accountingQuantityMinor / 1000 : item.remainingPackageMilli / 1000, version: 0 }))),
+          Promise.resolve<Location[]>([{ id: "warehouse-fifo", code: "FIFO", name: "FIFO-склад", type: "warehouse", status: "active" }]),
+          Promise.resolve<ProductGroup[]>([]),
+          Promise.resolve<Manufacturer[]>([])
+        ])
+        : await Promise.all([
+          client.request<ProductResponse>(`/api/products?q=${isSeller ? "" : encodeURIComponent(q)}&status=${isSeller ? "active" : status}&page=${nextPage}&limit=${isSeller ? 100 : limit}`),
+          isSeller ? client.request<StockBalance[]>("/api/balances") : Promise.resolve(balances),
+          isSeller ? client.request<Location[]>("/api/locations") : Promise.resolve(locations),
+          client.request<ProductGroup[]>("/api/product-groups"),
+          client.request<Manufacturer[]>("/api/manufacturers")
+        ]);
+      setWarehouseMode(fifo);
       setProducts(data.items);
       setTotal(data.total);
       setPage(data.page);
@@ -108,10 +132,6 @@ export function ProductsPage({ client, session }: PageProps) {
     return () => window.clearTimeout(timer);
   }, [status, q]);
 
-  const categories = useMemo(() => [...new Set(products.map((item) => item.category).filter(Boolean))], [products]);
-  const activeCount = products.filter((item) => item.status === "active").length;
-  const barcodeGaps = products.filter((item) => !item.identifiers.some((identifier) => identifier.type === "barcode")).length;
-
   const startEdit = (product: Product) => {
     setEditingId(product.id);
     setShowForm(true);
@@ -135,12 +155,20 @@ export function ProductsPage({ client, session }: PageProps) {
 
   const selectProduct = async (product: Product) => {
     setSelected(product);
-    const [nextPackagings, nextPrices] = await Promise.all([
+    const [nextPackagings, nextPrices, nextProfitability,nextLots] = await Promise.all([
       client.request<ProductPackaging[]>(`/api/products/${product.id}/packagings`),
-      client.request<ProductPriceHistory[]>(`/api/product-prices?${product.groupId ? `groupId=${encodeURIComponent(product.groupId)}` : `productId=${encodeURIComponent(product.id)}`}`)
+      client.request<ProductPriceHistory[]>(`/api/product-prices?${product.groupId ? `groupId=${encodeURIComponent(product.groupId)}` : `productId=${encodeURIComponent(product.id)}`}`),
+      session.permissions.includes("reports:read")
+        ? client.request<ProductProfitability>(`/api/warehouse/products/${product.id}/profitability`)
+        : Promise.resolve(null),
+      session.permissions.includes("reports:read")
+        ? client.request<typeof lots>(`/api/warehouse/lots?productId=${encodeURIComponent(product.id)}`)
+        : Promise.resolve([])
     ]);
     setPackagings(nextPackagings);
     setPrices(nextPrices);
+    setProfitability(nextProfitability);
+    setLots(nextLots);
   };
 
   const addPackaging = async () => {
@@ -219,7 +247,7 @@ export function ProductsPage({ client, session }: PageProps) {
     } catch (err) { setMessage((err as Error).message); }
   };
 
-  const uploadPhoto = async (file?: File) => {
+  const uploadPhoto = async (file?: File, product?: Product) => {
     if (!file) return;
     const validation = mediaUploadValidation(file.size, file.type);
     if (validation) {
@@ -231,11 +259,27 @@ export function ProductsPage({ client, session }: PageProps) {
     try {
       const base64 = await readFileAsDataUrl(file);
       const uploaded = await client.request<MediaUploadResponse>("/api/media/upload", { method: "POST", body: JSON.stringify({ mimeType: file.type, base64 }) });
-      setForm((current) => ({ ...current, photoUrl: uploaded.url }));
-      setMessage(`Фото загружено: ${Math.round(uploaded.originalBytes / 1024)} КБ`);
+      if (product) {
+        setUploadingProductId(product.id);
+        await client.request<Product>(`/api/products/${product.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ photoUrl: uploaded.url })
+        });
+        setFailedPhotoIds((current) => {
+          const next = new Set(current);
+          next.delete(product.id);
+          return next;
+        });
+        await load(page);
+        setMessage("Фотография товара сохранена");
+      } else {
+        setForm((current) => ({ ...current, photoUrl: uploaded.url }));
+        setMessage(`Фото загружено: ${Math.round(uploaded.originalBytes / 1024)} КБ`);
+      }
     } catch (err) {
       setMessage((err as Error).message);
     } finally {
+      setUploadingProductId("");
       setSaving(false);
     }
   };
@@ -261,7 +305,10 @@ export function ProductsPage({ client, session }: PageProps) {
     }
   };
 
-  const localFiltered = products.filter((product) => toSearchText([product.localName, product.officialName, product.category, product.identifiers.map((item) => item.value).join(" ")]).includes(q.toLowerCase()));
+  const localFiltered = products.filter((product) =>
+    (inventoryKind === "all" || product.inventoryKind === inventoryKind)
+    && toSearchText([product.localName, product.officialName, product.category, product.identifiers.map((item) => item.value).join(" ")]).includes(q.toLowerCase())
+  );
   const sellerResults = useMemo(() => {
     const query = q.trim().toLowerCase();
     return products
@@ -319,35 +366,33 @@ export function ProductsPage({ client, session }: PageProps) {
   return (
     <>
       <section className="stack admin-page products-page">
-      <PageHeader
-        title="Товары"
-        description="Каталог, идентификаторы, статусы и пороги остатков."
-        actions={canWrite && <button onClick={startCreate}>Создать товар</button>}
-      />
-
-      <div className="metric-grid compact secondary-metrics">
-        <Metric title="Показано" value={products.length} detail={`из ${total}`} />
-        <Metric title="Активные" value={activeCount} />
-        <Metric title="Без штрихкода" value={barcodeGaps} tone={barcodeGaps ? "warn" : "good"} />
-        <Metric title="Категории" value={categories.length} />
+      <div className="catalog-commandbar">
+        <div className="section-tabs catalog-tabs" role="tablist" aria-label="Разделы каталога">
+          <button className={catalogSection === "products" && inventoryKind === "all" ? "active" : "secondary"} onClick={() => { setCatalogSection("products"); setInventoryKind("all"); }}>Все товары</button>
+          <button className={catalogSection === "products" && inventoryKind === "piece" ? "active" : "secondary"} onClick={() => { setCatalogSection("products"); setInventoryKind("piece"); }}>Штучные</button>
+          <button className={catalogSection === "products" && inventoryKind === "weight" ? "active" : "secondary"} onClick={() => { setCatalogSection("products"); setInventoryKind("weight"); }}>Весовые</button>
+          <button className={catalogSection === "dictionaries" ? "active" : "secondary"} onClick={() => setCatalogSection("dictionaries")}>Справочники</button>
+        </div>
+        {canWrite && <button className="catalog-create" onClick={startCreate}>Создать товар</button>}
       </div>
 
-      {canWrite && (
-        <details className="panel secondary-panel catalog-dictionaries">
-          <summary>Управление справочниками</summary>
-          <div className="form-grid details-content">
+      {catalogSection === "dictionaries" && canWrite && (
+        <Panel className="secondary-panel catalog-dictionaries" title="Группы и производители">
+          <div className="form-grid">
             <Field label="Новая группа"><input value={newGroupName} onChange={(event) => setNewGroupName(event.target.value)} placeholder="Например, Сладости" /></Field>
             <Field label="Тип группы"><select value={newGroupKind} onChange={(event) => setNewGroupKind(event.target.value as "piece" | "weight")}><option value="piece">Штучная</option><option value="weight">Весовая</option></select></Field>
             <div className="inline-actions"><button onClick={() => void createGroup()}>Добавить группу</button></div>
             <Field label="Новый производитель"><input value={newManufacturerName} onChange={(event) => setNewManufacturerName(event.target.value)} placeholder="Название" /></Field>
             <div className="inline-actions"><button onClick={() => void createManufacturer()}>Добавить производителя</button></div>
           </div>
-        </details>
+        </Panel>
       )}
 
-      <Panel title="Каталог" className="primary-panel">
-        <Toolbar>
-          <label className="search">
+      {catalogSection === "products" && <>
+        {warehouseMode && <Notice>Каталог и остатки берутся из Warehouse. Изменение карточек перенесено в отдельный контракт склада.</Notice>}
+        <Toolbar className="catalog-toolbar">
+          <label className="search catalog-search">
+            <Search size={18} aria-hidden="true" />
             <input value={q} onChange={(event) => setQ(event.target.value)} onKeyDown={(event) => event.key === "Enter" && load(1)} placeholder="Поиск по названию, артикулу, штрихкоду" />
           </label>
           <select value={status} onChange={(event) => setStatus(event.target.value as typeof status)}>
@@ -356,45 +401,57 @@ export function ProductsPage({ client, session }: PageProps) {
             <option value="archived">Архив</option>
             <option value="deleted">Удаленные</option>
           </select>
+          <label className="identifier-toggle">
+            <input type="checkbox" checked={showIdentifiers} onChange={(event) => setShowIdentifiers(event.target.checked)} />
+            <span>Показать артикул и штрихкод</span>
+          </label>
         </Toolbar>
-        {message && <Notice tone={message.includes("создан") || message.includes("обнов") || message.includes("загруж") ? "good" : "danger"}>{message}</Notice>}
+        {message && <Notice tone={message.includes("создан") || message.includes("обнов") || message.includes("загруж") || message.includes("сохран") ? "good" : "danger"}>{message}</Notice>}
         {loading ? (
           <Skeleton />
         ) : (
-          <DataTable
-            rows={localFiltered}
-            empty="Товары не найдены"
-            columns={[
-              { key: "name", header: "Товар", render: (row) => <button className="link-button table-product" onClick={() => void selectProduct(row)}><strong>{row.localName || row.officialName}</strong><small>{row.officialName} · {row.category}</small></button> },
-              { key: "kind", header: "Тип", render: (row) => formatProductKind(row) },
-              { key: "ids", header: "Артикул / штрихкод", render: (row) => identifierSummary(row) },
-              { key: "threshold", header: "Порог", render: (row) => formatProductQuantity(row, row.lowStockThreshold) },
-              { key: "status", header: "Статус", render: (row) => <StatusBadge tone={row.status === "active" ? "good" : row.status === "deleted" ? "danger" : "neutral"}>{productStatusLabels[row.status]}</StatusBadge> },
-              {
-                key: "actions",
-                header: "Действия",
-                render: (row) => (
-                  <details className="action-menu">
-                    <summary aria-label={`Действия с товаром ${row.localName}`}>⋯</summary>
-                    <div className="action-menu-popover">
-                      {canWrite && <button className="secondary small" onClick={() => startEdit(row)}>Редактировать</button>}
-                      {canWrite && row.status !== "archived" && <button className="danger small" onClick={() => updateStatus(row, "archived")}>В архив</button>}
-                      {canWrite && row.status !== "active" && <button className="secondary small" onClick={() => updateStatus(row, "active")}>Восстановить</button>}
-                    </div>
-                  </details>
-                )
-              }
-            ]}
-          />
+          localFiltered.length ? <div className="catalog-card-grid">
+            {localFiltered.map((product) => (
+              <article className="catalog-product-card" key={product.id}>
+                <div className="catalog-card-media">
+                  {product.photoUrl && !failedPhotoIds.has(product.id) ? (
+                    <img src={product.photoUrl} alt={product.localName || product.officialName} onError={() => setFailedPhotoIds((current) => new Set(current).add(product.id))} />
+                  ) : (
+                    <label className="catalog-photo-placeholder">
+                      <ImagePlus size={34} aria-hidden="true" />
+                      <span>{uploadingProductId === product.id ? "Загрузка..." : "Добавить фото"}</span>
+                      <input type="file" accept={MEDIA_UPLOAD_ALLOWED_TYPES.join(",")} disabled={!canWrite || saving} onChange={(event) => void uploadPhoto(event.target.files?.[0], product)} />
+                    </label>
+                  )}
+                  <ActionMenu label={`Действия с товаром ${product.localName}`} className="catalog-card-menu">
+                    <button className="secondary small" onClick={() => void selectProduct(product)}>Открыть</button>
+                    {canWrite && <button className="secondary small" onClick={() => startEdit(product)}>Редактировать</button>}
+                    {canWrite && product.photoUrl && <label className="menu-file-action">Заменить фото<input type="file" accept={MEDIA_UPLOAD_ALLOWED_TYPES.join(",")} disabled={saving} onChange={(event) => void uploadPhoto(event.target.files?.[0], product)} /></label>}
+                    {canWrite && product.status !== "archived" && <button className="danger small" onClick={() => updateStatus(product, "archived")}>В архив</button>}
+                    {canWrite && product.status !== "active" && <button className="secondary small" onClick={() => updateStatus(product, "active")}>Восстановить</button>}
+                  </ActionMenu>
+                </div>
+                <button className="catalog-card-content" onClick={() => void selectProduct(product)}>
+                  <strong>{product.localName || product.officialName}</strong>
+                  <span>{productCardSubtitle(product)}</span>
+                  {showIdentifiers && <small className="catalog-identifiers">{identifierSummary(product)}</small>}
+                  <dl>
+                    <div><dt>Порог</dt><dd>{formatProductQuantity(product, product.lowStockThreshold)}</dd></div>
+                    <div><dt>Статус</dt><dd><StatusBadge tone={product.status === "active" ? "good" : product.status === "deleted" ? "danger" : "neutral"}>{productStatusLabels[product.status]}</StatusBadge></dd></div>
+                  </dl>
+                </button>
+              </article>
+            ))}
+          </div> : <Notice>Товары не найдены.</Notice>
         )}
         <div className="pagination">
           <button className="secondary" disabled={page <= 1 || loading} onClick={() => load(page - 1)}>Назад</button>
           <span>Страница {page}, показано {products.length} из {total}</span>
           <button className="secondary" disabled={page * limit >= total || loading} onClick={() => load(page + 1)}>Вперед</button>
         </div>
-      </Panel>
+      </>}
 
-      <div className="two-column detail-area">
+      <Drawer open={showForm || Boolean(selected)} onClose={() => { resetForm(); setSelected(null); }} title={showForm ? (editingId ? "Редактирование товара" : "Создание товара") : selected?.localName || "Карточка товара"}>
         {canWrite && showForm && (
           <Panel title={editingId ? "Редактирование товара" : "Создание товара"}>
             {!editingId && <Notice>Создавайте новый товар только если не нашли его поиском по названию, SKU или штрихкоду.</Notice>}
@@ -433,24 +490,41 @@ export function ProductsPage({ client, session }: PageProps) {
               <div><span>Тип</span><strong>{formatProductKind(selected)}</strong></div>
               <div><span>Артикул</span><strong>{selected.article || "—"}</strong></div>
               <div><span>Порог</span><strong>{formatProductQuantity(selected, selected.lowStockThreshold)}</strong></div>
-              <div><span>Идентификаторы</span><strong>{identifierSummary(selected)}</strong></div>
+              {showIdentifiers && <div><span>Идентификаторы</span><strong>{identifierSummary(selected)}</strong></div>}
               <div><span>Упаковки</span><strong>{packagings.map((item) => `${item.name}${item.massGrams ? ` · ${item.massGrams} г` : ""}`).join("; ") || "—"}</strong></div>
               <div><span>История цен</span><strong>{prices.map((item) => `${(item.priceKopecks / 100).toFixed(2)} ₽ с ${new Date(item.effectiveFrom).toLocaleDateString("ru-RU")}`).join("; ") || "—"}</strong></div>
+              {profitability && <div><span>Оценочная маржа</span><strong>{profitability.estimated.availability === "available" ? `${((profitability.estimated.marginPerPackageKopecks || 0) / 100).toFixed(2)} ₽ / упаковка` : "Недостаточно данных"}</strong></div>}
+              {profitability && <div><span>Фактическая маржа</span><strong>{profitability.actual.availability === "unavailable" ? "Касса не подключена или данные неполны" : `${((profitability.actual.marginKopecks || 0) / 100).toFixed(2)} ₽`}</strong></div>}
+              {session.permissions.includes("reports:read")&&<div><span>Партии FIFO</span><strong>{lots.map((lot)=>`${new Date(lot.receivedAt).toLocaleDateString("ru-RU")}: ${(lot.remainingPackageMilli/1000).toFixed(3)} из ${(lot.receivedPackageMilli/1000).toFixed(3)} уп. · ${(lot.totalCostKopecks/100).toFixed(2)} ₽`).join("; ")||"Нет партий"}</strong></div>}
               {canWrite && <div className="form-grid"><Field label="Новая упаковка"><input value={packagingName} onChange={(event) => setPackagingName(event.target.value)} /></Field><button onClick={() => void addPackaging()}>Добавить</button><Field label="Новая цена, ₽"><input inputMode="decimal" value={priceRubles} onChange={(event) => setPriceRubles(event.target.value)} /></Field><button onClick={() => void addPrice()}>Записать цену</button></div>}
             </div>
           ) : (
             <Notice>Выберите товар в таблице.</Notice>
           )}
         </Panel>
-      </div>
+      </Drawer>
       </section>
       {confirmDialog}
     </>
   );
 }
 
+function warehouseProduct(product: WarehouseCatalogProduct): Product {
+  return {
+    id: product.id, officialName: product.officialName, localName: product.localName,
+    unit: product.inventoryKind === "weight" ? "кг" : "шт", photoUrl: "", category: "Складская номенклатура", tags: [], status: product.status,
+    identifiers: product.article ? [{ id: `article-${product.id}`, productId: product.id, type: "supplier_article", value: product.article }] : [],
+    lowStockThreshold: product.inventoryKind === "weight" ? 1 : 3, inventoryKind: product.inventoryKind, packageMassGrams: product.packageMassGrams, article: product.article
+  };
+}
+
 function identifierSummary(product: Product) {
   return formatIdentifiers(product, true);
+}
+
+function productCardSubtitle(product: Product) {
+  const category = /весов|штучн/i.test(product.category) ? "" : product.category.trim();
+  return [product.officialName, category].filter(Boolean).join(" · ");
 }
 
 function productStockLines(productId: string, balances: StockBalance[], locations: Location[]) {

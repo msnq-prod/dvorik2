@@ -26,14 +26,25 @@ const environment = {
   DVORIK_MEDIA_DIR: media,
   DVORIK_BACKUP_DIR: backups,
   DVORIK_COOKIE_SAME_SITE: "lax",
-  DVORIK_SESSION_SECRET: "artifact-production-session-secret-at-least-32-bytes"
+  DVORIK_SESSION_SECRET: "artifact-production-session-secret-at-least-32-bytes",
+  DVORIK_STAFF_MODE: "external",
+  DVORIK_STAFF_BASE_URL: "http://127.0.0.1:3202",
+  DVORIK_INTERNAL_SECRET: "artifact-internal-secret-at-least-32-bytes"
 };
 
 assert.equal(fs.existsSync(path.resolve("dist/index.js")), true, "Build artifact is missing");
 assert.equal(fs.existsSync(path.resolve("dist/backup-job.js")), true, "Backup job artifact is missing");
-assert.equal(fs.existsSync(path.resolve("dist/saby-worker.js")), true, "Saby worker artifact is missing");
+assert.equal(fs.existsSync(path.resolve("dist/warehouse-company-worker.js")), true, "Company worker artifact is missing");
+assert.equal(fs.existsSync(path.resolve("dist/cash/index.js")), true, "Cash service artifact is missing");
+assert.equal(fs.existsSync(path.resolve("dist/cash/backup-job.js")), true, "Cash backup job artifact is missing");
+assert.equal(fs.existsSync(path.resolve("dist/staff/index.js")), true, "Staff service artifact is missing");
+assert.equal(fs.existsSync(path.resolve("dist/staff/backup-job.js")), true, "Staff backup job artifact is missing");
+assert.equal(fs.existsSync(path.resolve("dist/staff/migrate-from-core.js")), true, "Staff migration artifact is missing");
+assert.equal(fs.existsSync(path.resolve("dist/staff/finalize-core-cutover.js")), true, "Staff cutover artifact is missing");
 assert.equal(fs.existsSync(path.resolve("dist/public/index.html")), true, "Built UI is missing");
 assert.equal(fs.existsSync(path.resolve("dist/migrations/008_identity_user_version.sql")), true, "Migrations are missing from artifact");
+assert.equal(fs.existsSync(path.resolve("dist/cash/migrations/001_cash_schema.sql")), true, "Cash migrations are missing from artifact");
+assert.equal(fs.existsSync(path.resolve("dist/staff/migrations/003_staff_outbox.sql")), true, "Staff migrations are missing from artifact");
 
 const child = spawn(process.execPath, ["dist/index.js"], { cwd: process.cwd(), env: environment, stdio: ["ignore", "pipe", "pipe"] });
 let output = "";

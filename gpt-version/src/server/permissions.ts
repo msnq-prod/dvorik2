@@ -3,6 +3,7 @@ import type { Permission, Role, User } from "../shared/types";
 export const rolePermissions: Record<Role, Permission[]> = {
   seller: [
     "products:read",
+    "products:scan_manage",
     "stock:move",
     "inventory:write",
     "labels:print"
@@ -10,6 +11,7 @@ export const rolePermissions: Record<Role, Permission[]> = {
   admin: [
     "products:read",
     "products:write",
+    "products:scan_manage",
     "stock:move",
     "inventory:write",
     "reports:read",
@@ -25,6 +27,7 @@ export const rolePermissions: Record<Role, Permission[]> = {
   super_admin: [
     "products:read",
     "products:write",
+    "products:scan_manage",
     "stock:move",
     "inventory:write",
     "reports:read",

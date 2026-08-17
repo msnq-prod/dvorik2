@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import {
   Boxes,
   CalendarDays,
+  ChevronDown,
   ChevronLeft,
   ClipboardCheck,
   Gauge,
@@ -12,14 +13,16 @@ import {
   PackagePlus,
   Printer,
   Search,
+  Settings,
   Shield,
   RefreshCw,
   Sun,
+  UserCircle,
   Users,
   X
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import type { Location, Permission, Shift } from "../../shared/types";
+import type { Location, Permission, Product, Shift, ShiftExchangeRequest, StockBalance } from "../../shared/types";
 import { api } from "./api";
 import type { AuthMode, DevConfig, NavigationIntent, SessionData, View } from "./appTypes";
 import { AuditPage } from "./pages/AuditPage";
@@ -96,6 +99,8 @@ const navigationGroups: NavigationGroup[] = [
   }
 ];
 
+const primaryNavigationKeys = new Set<View>(["dashboard", "products", "stock", "inventory", "schedule"]);
+
 const defaultUserOptions = [
   { id: "u-super", label: "Анна, super admin" },
   { id: "u-admin", label: "Олег, admin" },
@@ -110,7 +115,7 @@ function App() {
   const [userId, setUserId] = useState("u-admin");
   const [authMode, setAuthMode] = useState<AuthMode>("demo");
   const [devConfig, setDevConfig] = useState<DevConfig | null>(null);
-  const [dark, setDark] = useState(() => localStorage.getItem("theme") === "dark");
+  const [dark, setDark] = useState(() => localStorage.getItem("theme-v2") !== "light");
   const [dense, setDense] = useState(() => localStorage.getItem("density") === "dense");
   const [session, setSession] = useState<SessionData | null>(null);
   const [error, setError] = useState("");
@@ -129,7 +134,7 @@ function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
-    localStorage.setItem("theme", dark ? "dark" : "light");
+    localStorage.setItem("theme-v2", dark ? "dark" : "light");
   }, [dark]);
 
   useEffect(() => {
@@ -249,6 +254,9 @@ function App() {
 
   const userOptions = devConfig?.users.map((user) => ({ id: user.id, label: `${user.firstName} ${user.lastName}, ${user.role}` })) || defaultUserOptions;
   const availableViews = useMemo(() => flattenNavigation(navigationGroups).filter((item) => isAllowed(item, session)), [session]);
+  const sidebarItems = availableViews.filter((item) => session?.user.role !== "seller" || !["dashboard", "products", "stock", "schedule"].includes(item.key));
+  const primarySidebarItems = sidebarItems.filter((item) => primaryNavigationKeys.has(item.key));
+  const secondarySidebarItems = sidebarItems.filter((item) => !primaryNavigationKeys.has(item.key));
   const viewIsAvailable = availableViews.some((item) => item.key === view);
 
   useEffect(() => {
@@ -283,62 +291,62 @@ function App() {
   }, [view]);
 
   return (
-    <div className={`app-shell ${sidebarOpen ? "sidebar-open" : ""}`}>
-      <button className="sidebar-backdrop mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Закрыть меню" />
+    <div className={`app-shell ${view === "labels" ? "labels-shell" : ""} ${sidebarOpen ? "sidebar-open" : ""}`}>
+      <button className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} aria-label="Закрыть меню" />
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">Д</div>
-          <div>
-            <strong>Дворик</strong>
-            <span>Рабочее приложение</span>
-          </div>
+          <strong>Дворик</strong>
           <button className="icon-button mobile-only sidebar-close" onClick={() => setSidebarOpen(false)} aria-label="Закрыть меню"><X size={18} /></button>
         </div>
         <nav className="mega-nav">
-          {navigationGroups.map((group) => {
-            const items = group.items.filter((item) => isAllowed(item, session)).filter((item) => session?.user.role !== "seller" || !["dashboard", "products", "stock", "schedule"].includes(item.key));
-            if (!items.length) return null;
-            return (
-              <section className="nav-group" key={group.title}>
-                <span>{group.title}</span>
-                {items.map((item) => (
+          <div className="sidebar-primary">
+            {primarySidebarItems.map((item) => (
+              <button key={item.key} className={view === item.key ? "active" : ""} onClick={() => { navigateTo(item.key); setSidebarOpen(false); }}>
+                <item.icon size={19} />
+                <span>{item.key === "dashboard" ? "Главное" : item.label}</span>
+              </button>
+            ))}
+          </div>
+          {secondarySidebarItems.length > 0 && (
+            <details className="sidebar-more" open={secondarySidebarItems.some((item) => item.key === view)}>
+              <summary><ChevronDown size={18} /><span>Ещё</span></summary>
+              <div>
+                {secondarySidebarItems.map((item) => (
                   <button key={item.key} className={view === item.key ? "active" : ""} onClick={() => { navigateTo(item.key); setSidebarOpen(false); }}>
                     <item.icon size={18} />
-                    <span>
-                      <strong>{item.label}</strong>
-                      <small>{item.description}</small>
-                    </span>
+                    <span>{item.label}</span>
                   </button>
                 ))}
-              </section>
-            );
-          })}
+              </div>
+            </details>
+          )}
         </nav>
+        {session && <div className="sidebar-footer">
+          <div className="sidebar-account">
+            <UserCircle size={20} />
+            <span><strong>{session.user.firstName} {session.user.lastName}</strong><small>{roleLabel(session.user.role)}</small></span>
+          </div>
+          <details className="sidebar-settings">
+            <summary><Settings size={19} /><span>Настройки</span><ChevronDown size={16} /></summary>
+            <div>
+              {devConfig?.telegramTestMode && <div className="sidebar-dev-settings"><div className="segmented-control" aria-label="Auth mode"><button className={authMode === "demo" ? "active" : ""} onClick={() => switchMode("demo")}>Demo</button><button className={authMode === "telegram-test" ? "active" : ""} onClick={() => switchMode("telegram-test")}>TG Test</button></div><select value={userId} onChange={(event) => loginAs(event.target.value)}>{userOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select></div>}
+              <button className="secondary" onClick={() => setDark((value) => !value)}>{dark ? <Sun size={18} /> : <Moon size={18} />}<span>{dark ? "Светлая тема" : "Тёмная тема"}</span></button>
+              <button className="secondary" onClick={() => setDense((value) => !value)}><span className="density-symbol">{dense ? "A" : "A−"}</span><span>{dense ? "Обычная плотность" : "Компактная плотность"}</span></button>
+              <button className="secondary" onClick={logout}><LogOut size={18} /><span>Выйти</span></button>
+            </div>
+          </details>
+        </div>}
       </aside>
 
       <main className="workspace">
-        <header className={`topbar ${view === "dashboard" ? "dashboard-topbar" : ""}`}>
+        <header className={`topbar ${view === "labels" ? "labels-topbar" : ""} ${view === "dashboard" ? "dashboard-topbar" : ""} ${view === "products" ? "products-topbar" : ""} ${view === "stock" ? "stock-topbar" : ""}`}>
           <div className="topbar-title">
-            {!(["dashboard", "products", "stock", "schedule"] as View[]).includes(view) && <button className="icon-button mobile-only" onClick={goBack} aria-label="Назад"><ChevronLeft size={20} /></button>}
-            <div>
+            {view === "labels" && <button className="icon-button secondary labels-menu-button" onClick={() => setSidebarOpen(true)} aria-label="Открыть меню"><Menu size={20} /></button>}
+            {view !== "labels" && !(["dashboard", "products", "stock", "schedule"] as View[]).includes(view) && <button className="icon-button mobile-only" onClick={goBack} aria-label="Назад"><ChevronLeft size={20} /></button>}
+            {view !== "labels" && <div>
               <h1>{topbarTitle}</h1>
-            </div>
-          </div>
-          <div className="top-actions desktop-actions">
-            {devConfig?.telegramTestMode && (
-              <div className="segmented-control" aria-label="Auth mode">
-                <button className={authMode === "demo" ? "active" : ""} onClick={() => switchMode("demo")}>Demo</button>
-                <button className={authMode === "telegram-test" ? "active" : ""} onClick={() => switchMode("telegram-test")}>TG Test</button>
-              </div>
-            )}
-            {devConfig?.telegramTestMode && (
-              <select value={userId} onChange={(event) => loginAs(event.target.value)}>
-                {userOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-              </select>
-            )}
-            <button className="icon-button" onClick={() => setDark((value) => !value)} aria-label="Тема">{dark ? <Sun size={18} /> : <Moon size={18} />}</button>
-            <button className="icon-button" onClick={() => setDense((value) => !value)} aria-label="Плотность">{dense ? "A" : "A−"}</button>
-            <button className="icon-button" onClick={logout} aria-label="Выход"><LogOut size={18} /></button>
+            </div>}
           </div>
         </header>
 
@@ -394,24 +402,41 @@ function isAllowed(item: NavigationItem, session: SessionData | null) {
   return item.permissions.every((permission) => session.permissions.includes(permission));
 }
 
+function roleLabel(role: SessionData["user"]["role"]) {
+  if (role === "super_admin") return "Владелец";
+  if (role === "admin") return "Администратор";
+  return "Продавец";
+}
+
 function MainMenuPage({ client, session, onNavigate }: { client: ReturnType<typeof api>; session: SessionData; onNavigate: (view: View, intent?: NavigationIntent) => void }) {
   const isSeller = session.user.role === "seller";
   const [nextShift, setNextShift] = useState<Shift | null>(null);
   const [shiftLocation, setShiftLocation] = useState("");
   const [inventoryActive, setInventoryActive] = useState(false);
+  const [lowStockCount, setLowStockCount] = useState(0);
+  const [incomingExchanges, setIncomingExchanges] = useState(0);
   useEffect(() => {
     if (!isSeller) return;
-    void Promise.all([
-      client.request<Shift[]>("/api/schedule"),
-      client.request<Location[]>("/api/locations"),
-      client.request<unknown>("/api/inventory/session/active")
-    ]).then(([shifts, locations, inventory]) => {
+    void (async () => {
+      const [shifts, locations, inventory, products, balances, exchanges] = await Promise.all([
+        client.request<Shift[]>("/api/schedule"),
+        client.request<Location[]>("/api/locations"),
+        client.request<unknown>("/api/inventory/session/active"),
+        client.request<{ items: Product[] }>("/api/products?status=active&limit=100"),
+        client.request<StockBalance[]>("/api/balances"),
+        client.request<ShiftExchangeRequest[]>("/api/schedule/exchanges")
+      ]);
       const today = new Date().toISOString().slice(0, 10);
       const own = shifts.filter((shift) => shift.employeeIds.includes(session.user.id) && shift.status === "scheduled" && shift.date >= today).sort((a, b) => a.date.localeCompare(b.date))[0] || null;
       setNextShift(own);
       setShiftLocation(own ? locations.find((location) => location.id === own.locationId)?.name || "Точка не указана" : "");
       setInventoryActive(Boolean(inventory));
-    }).catch(() => undefined);
+      setLowStockCount(balances.filter((balance) => {
+        const product = products.items.find((item) => item.id === balance.productId);
+        return product && balance.quantity <= product.lowStockThreshold;
+      }).length);
+      setIncomingExchanges(exchanges.filter((item) => item.status === "pending" && item.toUserId === session.user.id).length);
+    })().catch(() => undefined);
   }, [client, isSeller, session.user.id]);
   const availableGroups = navigationGroups
     .map((group) => ({ ...group, items: group.items.filter((item) => item.key !== "dashboard" && isAllowed(item, session)) }))
@@ -439,7 +464,7 @@ function MainMenuPage({ client, session, onNavigate }: { client: ReturnType<type
         </div>
       </div>
 
-      {isSeller && <section className="today-context" aria-label="Сегодня"><div><span>Ближайшая смена</span>{nextShift ? <strong>{new Date(`${nextShift.date}T00:00:00`).toLocaleDateString("ru-RU", { day: "numeric", month: "long" })} · 10:00–21:00 · {shiftLocation}</strong> : <strong>Смен пока нет</strong>}</div>{inventoryActive && <button className="context-alert" onClick={() => onNavigate("inventory")}>Пересчёт активен — продолжить</button>}</section>}
+      {isSeller && <section className="today-context" aria-label="Сегодня"><div><span>Ближайшая смена</span>{nextShift ? <strong>{new Date(`${nextShift.date}T00:00:00`).toLocaleDateString("ru-RU", { day: "numeric", month: "long" })} · {nextShift.start}–{nextShift.end} · {shiftLocation}</strong> : <strong>Смен пока нет</strong>}</div>{lowStockCount > 0 && <button className="context-alert" onClick={() => onNavigate("stock", "stock-low")}>Заканчиваются товары · {lowStockCount}</button>}{inventoryActive && <button className="context-alert" onClick={() => onNavigate("inventory")}>Пересчёт активен — продолжить</button>}{incomingExchanges > 0 && <button className="context-alert" onClick={() => onNavigate("schedule")}>Входящий обмен · {incomingExchanges}</button>}</section>}
 
       <section className="quick-actions" aria-label="Быстрые действия">
         {quickActions.map((action) => (

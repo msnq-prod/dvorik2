@@ -34,10 +34,10 @@ export function movementReportRows(query: { from?: string; to?: string; productI
     const actorName = actor ? [actor.firstName, actor.lastName].filter(Boolean).join(" ") || actor.id : actorId || "Неизвестный сотрудник";
     return {
       id: nullableText(raw.id) || "missing-operation-id", occurredAt, type: nullableText(raw.type) || "unknown",
-      productId, productName: product?.localName || product?.officialName || productId || "Неизвестный товар",
-      fromLocationId, fromLocationName: fromLocation?.name || fromLocationId,
-      toLocationId, toLocationName: toLocation?.name || toLocationId,
-      quantity: nullableFiniteNumber(raw.quantity, product?.unit), actorId, actorName, reason: nullableText(raw.reason) || "Не указано",
+      productId, productName: product?.localName || product?.officialName || "Неизвестный товар",
+      fromLocationId, fromLocationName: fromLocation?.name || (fromLocationId ? "Точка неизвестна" : null),
+      toLocationId, toLocationName: toLocation?.name || (toLocationId ? "Точка неизвестна" : null),
+      quantity: nullableFiniteNumber(raw.quantity, product?.inventoryKind === "weight" ? "шт" : product?.unit), actorId, actorName, reason: nullableText(raw.reason) || "Не указано",
       reversedOperationId: nullableText(raw.reversedOperationId), inventoryExpected: nullableFiniteNumber(metadata.expected, product?.unit),
       inventoryActual: nullableFiniteNumber(metadata.actual, product?.unit), inventoryDelta: nullableFiniteNumber(metadata.delta, product?.unit)
     };
@@ -57,7 +57,8 @@ export function reportRows(user: User, type: ReportType, query: ReportQuery = {}
   return db.balances.map((balance) => {
     const product = db.products.find((item) => item.id === balance.productId);
     const location = db.locations.find((item) => item.id === balance.locationId);
-    return { productName: product?.localName || product?.officialName || balance.productId, productStatus: product?.status || "deleted", locationName: location?.name || balance.locationId, quantity: normalizeQuantity(balance.quantity, product?.unit), threshold: normalizeQuantity(product?.lowStockThreshold || 0, product?.unit) };
+    const unit = product?.inventoryKind === "weight" ? "шт" : product?.unit;
+    return { productName: product?.localName || product?.officialName || "Неизвестный товар", productStatus: product?.status || "deleted", locationName: location?.name || "Точка неизвестна", quantity: normalizeQuantity(balance.quantity, unit), threshold: normalizeQuantity(product?.lowStockThreshold || 0, unit) };
   }).filter((row) => type === "all" || (type === "low" && row.quantity > 0 && row.quantity <= row.threshold) || (type === "zero" && row.quantity === 0) || (type === "archive" && row.productStatus === "archived"));
 }
 

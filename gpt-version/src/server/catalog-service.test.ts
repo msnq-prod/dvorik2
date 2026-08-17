@@ -15,8 +15,10 @@ database.executeScript("CREATE TABLE schema_migrations(version INTEGER PRIMARY K
 applyMigrations(database);
 database.executeScript(`
   INSERT INTO roles(id,name) VALUES ('admin','admin'),('seller','seller'),('super_admin','super_admin');
-  INSERT INTO permissions(id,code) VALUES ('products:write','products:write');
-  INSERT INTO role_permissions(role_id,permission_id) VALUES ('admin','products:write'),('super_admin','products:write');
+  INSERT OR IGNORE INTO permissions(id,code) VALUES ('products:write','products:write'),('products:scan_manage','products:scan_manage');
+  INSERT OR IGNORE INTO role_permissions(role_id,permission_id) VALUES
+    ('admin','products:write'),('super_admin','products:write'),
+    ('admin','products:scan_manage'),('super_admin','products:scan_manage'),('seller','products:scan_manage');
   INSERT INTO users(id,status) VALUES ('u-admin','active'),('u-seller','active');
   INSERT INTO user_roles(user_id,role_id) VALUES ('u-admin','admin'),('u-seller','seller');
 `);
@@ -72,7 +74,7 @@ const input = {
   inventoryKind: "weight" as const,
   packageMassGrams: 500,
   category: "Сладости",
-  lowStockThreshold: 1.25,
+  lowStockThreshold: 2,
   identifiers: [{ type: "barcode" as const, value: "04601234567890" }]
 };
 assert.equal(catalog.create(metadata("forbidden", seller), input).status, 403);
@@ -89,10 +91,31 @@ assert.equal(catalog.create(metadata("create", admin), { ...input, officialName:
 assert.equal(catalog.create(metadata("duplicate-barcode"), { ...input, officialName: "Другое" }).status, 409);
 
 if (!("body" in created) || typeof created.body.id !== "string") throw new Error("created product id missing");
-const updated = catalog.update(metadata("update"), { productId: created.body.id, status: "archived", category: "Архив" });
+const quick = catalog.quickCreate(metadata("quick-seller", seller), {
+  officialName: "Вода",
+  localName: "Вода",
+  unit: "шт",
+  inventoryKind: "piece",
+  identifiers: [{ type: "barcode", value: "4600000000001" }]
+});
+assert.equal(quick.status, 201);
+assert.deepEqual(catalog.quickCreate(metadata("quick-seller", seller), {
+  officialName: "Вода",
+  localName: "Вода",
+  unit: "шт",
+  inventoryKind: "piece",
+  identifiers: [{ type: "barcode", value: "4600000000001" }]
+}), { ...quick, outcome: "replayed" });
+const barcodeAdded = catalog.addBarcode(metadata("barcode-add", seller), { productId: created.body.id, barcode: "4600000000002" });
+assert.equal(barcodeAdded.status, 201);
+assert.equal(catalog.addBarcode(metadata("barcode-existing", seller), { productId: created.body.id, barcode: "4600000000002" }).status, 200);
+assert.equal(database.query<{ count: number }>("SELECT count(*) count FROM product_identifiers WHERE product_id = ? AND type = 'barcode'", [created.body.id])[0].count, 2);
+assert.equal(catalog.addBarcode(metadata("barcode-conflict", seller), { productId: created.body.id, barcode: "4600000000001" }).status, 409);
+assert.equal(database.query<{ count: number }>("SELECT count(*) count FROM audit_entries WHERE entity_type='product' AND action='barcode_add' AND entity_id = ?", [created.body.id])[0].count, 1);
+const updated = catalog.update(metadata("update"), { productId: created.body.id, status: "archived", category: "Архив", photoUrl: "/media/catalog-card.webp" });
 assert.equal(updated.status, 200);
-assert.equal(database.query<{ status: string }>("SELECT status FROM products WHERE id = ?", [created.body.id])[0].status, "archived");
-assert.deepEqual(catalog.update(metadata("update"), { productId: created.body.id, status: "archived", category: "Архив" }), { ...updated, outcome: "replayed" });
+assert.deepEqual(database.query<{ status: string; photo_url: string }>("SELECT status, photo_url FROM products WHERE id = ?", [created.body.id])[0], { status: "archived", photo_url: "/media/catalog-card.webp" });
+assert.deepEqual(catalog.update(metadata("update"), { productId: created.body.id, status: "archived", category: "Архив", photoUrl: "/media/catalog-card.webp" }), { ...updated, outcome: "replayed" });
 
 const faulting = service((connection) => {
   const repositories = createSqliteCatalogCommandRepositories(connection);

@@ -17,7 +17,7 @@ import {
 
 const roles = ["seller", "admin", "super_admin"] as const satisfies readonly Role[];
 const permissions = [
-  "products:read", "products:write", "stock:move", "inventory:write", "reports:read",
+  "products:read", "products:write", "products:scan_manage", "stock:move", "inventory:write", "reports:read",
   "imports:write", "merge:write", "schedule:manage", "staff:manage", "saby:manage", "users:manage", "roles:manage",
   "techlog:read", "labels:print"
 ] as const satisfies readonly Permission[];

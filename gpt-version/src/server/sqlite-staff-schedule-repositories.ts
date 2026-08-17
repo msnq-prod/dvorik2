@@ -28,10 +28,10 @@ export function createSqliteStaffScheduleRepositories(database: DatabaseContext)
     ...schedule,
     staff: {
       userStatus(userId) {
-        return database.query<{ status: string }>("SELECT status FROM users WHERE id=?", [userId])[0]?.status as ReturnType<StaffScheduleRepositories["staff"]["userStatus"]>;
+        return database.query<{ status: string }>("SELECT status FROM staff_user_snapshots WHERE platform_user_id=?", [userId])[0]?.status as ReturnType<StaffScheduleRepositories["staff"]["userStatus"]>;
       },
       activeUserIds() {
-        return database.query<{ id: string }>("SELECT id FROM users WHERE status='active' ORDER BY id").map((row) => row.id);
+        return database.query<{ platform_user_id: string }>("SELECT platform_user_id FROM staff_user_snapshots WHERE status='active' ORDER BY platform_user_id").map((row) => row.platform_user_id);
       },
       profile: currentProfile,
       saveProfile(value, expectedRevision, at): WriteResult<EmployeeProfile> {

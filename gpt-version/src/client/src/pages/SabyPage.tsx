@@ -4,7 +4,8 @@ import type { PageProps } from "../appTypes";
 import { DataTable, Field, Metric, Notice, PageHeader, Panel, Skeleton } from "../ui";
 
 type Mapping = { nomenclatureUuid: string; name: string; barcode: string; article: string; productId: string | null; occurrences: number };
-type Status = { enabled: boolean; pointId: number; pendingSignals: number; state?: { lastSuccessAt?: string | null; lastErrorCode?: string | null; cursorUpdatedAt?: string | null } };
+type Status = { availability?: "connected" | "degraded" | "disabled"; enabled: boolean; pointId?: number; pendingSignals?: number; state?: { lastSuccessAt?: string | null; lastErrorCode?: string | null; cursorUpdatedAt?: string | null } };
+type WarehouseCatalogProduct = { id: string; officialName: string; localName: string; unit?: Product["unit"]; article: string; inventoryKind: "piece" | "weight"; packageMassGrams?: number; status: Product["status"] };
 
 export function SabyPage({ client }: PageProps) {
   const [status, setStatus] = useState<Status | null>(null);
@@ -18,11 +19,15 @@ export function SabyPage({ client }: PageProps) {
     setLoading(true);
     setMessage("");
     try {
-      const [nextStatus, nextMappings, catalog] = await Promise.all([
-        client.request<Status>("/api/saby/status"),
-        client.request<Mapping[]>("/api/saby/mappings"),
-        client.request<{ items: Product[] }>("/api/products?status=active&limit=100")
+      const [nextStatus, catalog] = await Promise.all([
+        client.request<Status>("/api/cash/status"),
+        client.request<WarehouseCatalogProduct[]>("/api/warehouse/catalog").then((items) => ({
+          items: items.filter((item) => item.status === "active").map(warehouseProduct)
+        }))
       ]);
+      const nextMappings = nextStatus.enabled
+        ? await client.request<Mapping[]>("/api/saby/mappings")
+        : [];
       setStatus(nextStatus);
       setMappings(nextMappings);
       setProducts(catalog.items);
@@ -48,9 +53,9 @@ export function SabyPage({ client }: PageProps) {
     <PageHeader title="Saby" description="Состояние синхронизации и сопоставление номенклатуры." actions={<button onClick={load}>Обновить</button>} />
     {message && <Notice tone={status ? "info" : "danger"}>{message}</Notice>}
     {status && !status.enabled && <Notice tone="info">Интеграция Saby не настроена. Сопоставления появятся после подключения.</Notice>}
-    {status && <div className="metric-grid compact secondary-metrics">
-      <Metric title="Точка Saby" value={status.pointId} detail="единственная торговая точка" />
-      <Metric title="Сигналы" value={status.pendingSignals} detail="ожидают синхронизации" />
+    {status?.enabled && <div className="metric-grid compact secondary-metrics">
+      <Metric title="Точка Saby" value={status.pointId ?? "—"} detail="единственная торговая точка" />
+      <Metric title="Сигналы" value={status.pendingSignals ?? 0} detail="ожидают синхронизации" />
       <Metric title="Последняя сверка" value={status.state?.lastSuccessAt ? new Date(status.state.lastSuccessAt).toLocaleString("ru-RU") : "—"} detail={status.state?.lastErrorCode || "без ошибки"} />
     </div>}
     <Panel className="primary-panel" title="Номенклатура Saby" description="UUID Saby связывается ровно с одним товаром Dvorik. Название товара не перезаписывается.">
@@ -62,4 +67,22 @@ export function SabyPage({ client }: PageProps) {
       ]} />
     </Panel>
   </section>;
+}
+
+function warehouseProduct(product: WarehouseCatalogProduct): Product {
+  return {
+    id: product.id,
+    officialName: product.officialName,
+    localName: product.localName,
+    unit: product.unit || (product.inventoryKind === "weight" ? "кг" : "шт"),
+    photoUrl: "",
+    category: "Складская номенклатура",
+    tags: [],
+    status: product.status,
+    identifiers: [],
+    lowStockThreshold: product.inventoryKind === "weight" ? 1 : 3,
+    inventoryKind: product.inventoryKind,
+    packageMassGrams: product.packageMassGrams,
+    article: product.article
+  };
 }

@@ -1,0 +1,23 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { openDatabase } from "./database";
+import { applyMigrations } from "./migrations";
+
+const root=fs.mkdtempSync(path.join(os.tmpdir(),"dvorik-company-worker-"));
+const file=path.join(root,"core.sqlite");
+const database=openDatabase(file);
+database.executeScript("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL); INSERT INTO schema_migrations VALUES (1,datetime('now')); ");
+applyMigrations(database);
+database.execute("INSERT INTO domain_outbox(event_id,producer,event_type,event_version,aggregate_id,payload_json,status,available_at,created_at) VALUES ('worker-event','warehouse','StockChanged',1,'p-1',?,'pending',datetime('now'),datetime('now'))",[JSON.stringify({productId:"p-1",quantityPackageMilliDelta:1000,accountingQuantityMinorDelta:1000,reason:"supply"})]);
+database.close();
+const result=spawnSync(process.execPath,["--import","tsx",path.resolve("src/server/warehouse-company-worker.ts")],{cwd:process.cwd(),env:{...process.env,DVORIK_SQLITE_FILE:file,DVORIK_COMPANY_WORKER_ONCE:"1"},encoding:"utf8"});
+assert.equal(result.status,0,result.stderr);
+const verified=openDatabase(file,{fileMustExist:true});
+assert.equal(verified.query<{status:string}>("SELECT status FROM domain_outbox WHERE event_id='worker-event'")[0].status,"sent");
+assert.equal(verified.query<{count:number}>("SELECT count(*) count FROM company_event_inbox WHERE event_id='worker-event'")[0].count,1);
+assert.equal(verified.query<{count:number}>("SELECT count(*) count FROM company_source_watermarks WHERE producer='warehouse-company-worker'")[0].count,1);
+verified.close();
+console.log("warehouse company worker tests passed");

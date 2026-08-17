@@ -11,6 +11,8 @@ import { createSeedState } from "./store";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "dvorik-session-http-"));
 const databasePath = path.join(root, "shared.sqlite");
+const staffDatabasePath = path.join(root, "staff.sqlite");
+const warehouseDatabasePath = path.join(root, "warehouse.sqlite");
 const mediaPath = path.join(root, "media");
 const backupPath = path.join(root, "backups");
 fs.mkdirSync(mediaPath);
@@ -18,6 +20,8 @@ fs.mkdirSync(backupPath);
 const botToken = "production-bot-token-for-session-http";
 const sessionSecret = "production-session-secret-at-least-32-bytes";
 const ports = [5700 + Math.floor(Math.random() * 200), 5900 + Math.floor(Math.random() * 200)];
+const staffPort = 6300 + Math.floor(Math.random() * 200);
+const warehousePort = 6500 + Math.floor(Math.random() * 200);
 const children: ChildProcess[] = [];
 const legacyRawCredential = "legacy-raw-session-id";
 
@@ -35,6 +39,7 @@ legacyState.sessions.push({
 bootstrapDatabase.executeScript(buildNormalizedStateSql(legacyState));
 bootstrapDatabase.execute("INSERT INTO app_state(id,payload,updated_at) VALUES ('main',?,?)", [JSON.stringify(legacyState), new Date().toISOString()]);
 bootstrapDatabase.close();
+fs.copyFileSync(databasePath, warehouseDatabasePath);
 
 const environment = {
   ...process.env,
@@ -52,6 +57,11 @@ const environment = {
   DVORIK_BACKUP_DIR: backupPath,
   DVORIK_COOKIE_SAME_SITE: "lax",
   DVORIK_SESSION_SECRET: sessionSecret,
+  DVORIK_STAFF_MODE: "external",
+  DVORIK_STAFF_BASE_URL: `http://127.0.0.1:${staffPort}`,
+  DVORIK_WAREHOUSE_MODE: "external",
+  DVORIK_WAREHOUSE_BASE_URL: `http://127.0.0.1:${warehousePort}`,
+  DVORIK_INTERNAL_SECRET: "session-http-internal-secret-at-least-32-bytes",
   DVORIK_SABY_ENABLED: "1",
   DVORIK_SABY_POINT_ID: "77",
   DVORIK_SABY_APP_CLIENT_ID: "session-http-client",
@@ -84,6 +94,44 @@ async function start(port: number) {
     });
   });
   return `http://127.0.0.1:${port}`;
+}
+
+async function startStaff() {
+  const child = spawn(process.execPath, [path.resolve("node_modules/tsx/dist/cli.mjs"), path.resolve("src/staff/index.ts")], {
+    cwd: process.cwd(), env: { ...environment, STAFF_PORT: String(staffPort), DVORIK_STAFF_SQLITE_FILE: staffDatabasePath, DVORIK_CORE_BASE_URL: "http://127.0.0.1:1" }, stdio: ["ignore", "pipe", "pipe"]
+  });
+  children.push(child); let output = "";
+  child.stdout!.on("data", (chunk) => { output += String(chunk); }); child.stderr!.on("data", (chunk) => { output += String(chunk); });
+  await new Promise<void>((resolve, reject) => { const timeout=setTimeout(()=>reject(new Error(`Staff did not start: ${output}`)),15_000); child.stdout!.on("data",()=>{if(output.includes("Dvorik Staff:")){clearTimeout(timeout);resolve();}}); child.once("exit",(code)=>{clearTimeout(timeout);reject(new Error(`Staff exited ${code}: ${output}`));}); });
+}
+
+async function startWarehouse() {
+  const child = spawn(process.execPath, [path.resolve("node_modules/tsx/dist/cli.mjs"), path.resolve("src/warehouse/index.ts")], {
+    cwd: process.cwd(),
+    env: {
+      ...environment,
+      WAREHOUSE_PORT: String(warehousePort),
+      DVORIK_WAREHOUSE_SQLITE_FILE: warehouseDatabasePath,
+      DVORIK_CORE_BASE_URL: `http://127.0.0.1:${ports[0]}`
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  children.push(child);
+  let output = "";
+  child.stdout!.on("data", (chunk) => { output += String(chunk); });
+  child.stderr!.on("data", (chunk) => { output += String(chunk); });
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`Warehouse did not start: ${output}`)), 15_000);
+    child.stdout!.on("data", () => {
+      if (!output.includes("Dvorik Warehouse:")) return;
+      clearTimeout(timeout);
+      resolve();
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timeout);
+      reject(new Error(`Warehouse exited ${code}: ${output}`));
+    });
+  });
 }
 
 function initData(telegramUserId = 1002) {
@@ -134,6 +182,8 @@ async function assertFeatureDisabled(base: string, path: string, cookie: string,
 }
 
 try {
+  await startStaff();
+  await startWarehouse();
   const first = await start(ports[0]);
   const second = await start(ports[1]);
   const ready = await fetch(`${first}/ready`);
@@ -143,9 +193,10 @@ try {
   assert.equal(ready.headers.get("x-frame-options"), "DENY");
   assert.deepEqual(await (await fetch(`${first}/live`)).json(), { live: true });
   assert.deepEqual(await (await fetch(`${first}/healthz`)).json(), { status: "ok" });
-  assert.equal((await fetch(`${first}/api/saby/webhook/wrong`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 401);
+  assert.equal((await fetch(`${first}/api/saby/webhook/wrong`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 503);
   const sabySignal = await fetch(`${first}/api/saby/webhook/${environment.DVORIK_SABY_WEBHOOK_SECRET}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ event: "sale_changed" }) });
-  assert.equal(sabySignal.status, 202);
+  assert.equal(sabySignal.status, 503);
+  assert.equal((await sabySignal.json() as { code: string }).code, "CASH_UNAVAILABLE");
 
   assert.equal(await status(first, `__Host-dvorik_session=${legacyRawCredential}`), 401);
   const compatibilityInspection = openDatabase(databasePath, { readonly: true, fileMustExist: true });
@@ -217,7 +268,12 @@ try {
   assert.equal(sellerProductWrite.status, 403);
   assert.equal((await sellerProductWrite.json() as { code?: string }).code, "FORBIDDEN");
   const superAdmin = await login(first, 1001);
+  assert.deepEqual(await (await fetch(`${first}/api/runtime/capabilities`, { headers: { cookie: superAdmin.cookie } })).json(), { warehouseWriteMode: "fifo" });
   assert.equal((await fetch(`${first}/api/saby/status`, { headers: { cookie: superAdmin.cookie } })).status, 200);
+  const cashStatus = await (await fetch(`${first}/api/cash/status`, { headers: { cookie: superAdmin.cookie } })).json() as { availability: string };
+  assert.equal(cashStatus.availability, "disabled");
+  const profitability = await (await fetch(`${first}/api/warehouse/products/p-1/profitability`, { headers: { cookie: superAdmin.cookie } })).json() as { actual: { availability: string } };
+  assert.equal(profitability.actual.availability, "unavailable");
   const backupResponse = await fetch(`${first}/api/backups`, { method: "POST", headers: { cookie: superAdmin.cookie } });
   const backupText = await backupResponse.text();
   assert.equal(backupResponse.status, 201, backupText);
@@ -255,24 +311,22 @@ try {
   const stockCreatedResponse = await fetch(`${first}/api/stock/operations`, {
     method: "POST",
     headers: { cookie: superAdmin.cookie, "content-type": "application/json", "idempotency-key": "http-stock-sql-receipt" },
-    body: JSON.stringify({ type: "receipt", productId: "p-1", toLocationId: "loc-main", quantity: 0.1, reason: "SQL production test" })
+    body: JSON.stringify({ type: "receipt", productId: "p-1", toLocationId: "loc-main", quantity: 1, reason: "SQL production test" })
   });
-  assert.equal(stockCreatedResponse.status, 201);
-  const stockCreated = await stockCreatedResponse.json() as { id: string; quantity: number };
-  assert.equal(stockCreated.quantity, 0.1);
+  assert.equal(stockCreatedResponse.status, 410);
+  assert.equal((await stockCreatedResponse.json() as { code: string }).code, "WAREHOUSE_LEGACY_WRITE_DISABLED");
   const stockReplayResponse = await fetch(`${second}/api/stock/operations`, {
     method: "POST",
     headers: { cookie: superAdmin.cookie, "content-type": "application/json", "idempotency-key": "http-stock-sql-receipt" },
-    body: JSON.stringify({ type: "receipt", productId: "p-1", toLocationId: "loc-main", quantity: 0.1, reason: "SQL production test" })
+    body: JSON.stringify({ type: "receipt", productId: "p-1", toLocationId: "loc-main", quantity: 1, reason: "SQL production test" })
   });
-  assert.equal(stockReplayResponse.status, 201);
-  assert.equal((await stockReplayResponse.json() as { id: string }).id, stockCreated.id);
-  const reversalResponse = await fetch(`${second}/api/stock/operations/${stockCreated.id}/reverse`, {
+  assert.equal(stockReplayResponse.status, 410);
+  const reversalResponse = await fetch(`${second}/api/stock/operations/missing/reverse`, {
     method: "POST",
     headers: { cookie: superAdmin.cookie, "content-type": "application/json", "idempotency-key": "http-stock-sql-reversal" },
     body: "{}"
   });
-  assert.equal(reversalResponse.status, 201);
+  assert.equal(reversalResponse.status, 410);
   const snapshotBeforeInventory = await (await fetch(`${first}/api/inventory/loc-main/snapshot`, { headers: { cookie: superAdmin.cookie } })).json() as Array<{ productId: string; locationId: string; expected: number; version: number }>;
   const inventoryRow = snapshotBeforeInventory.find((row) => row.productId === "p-1");
   assert.ok(inventoryRow);
@@ -281,10 +335,9 @@ try {
     headers: { cookie: superAdmin.cookie, "content-type": "application/json", "idempotency-key": "http-stock-sql-inventory" },
     body: JSON.stringify({ comment: "SQL production inventory", rows: [{ ...inventoryRow, actual: inventoryRow.expected + 0.1 }] })
   });
-  assert.equal(inventoryResponse.status, 201);
+  assert.equal(inventoryResponse.status, 410);
   const stockInspection = openDatabase(databasePath, { readonly: true, fileMustExist: true });
-  assert.equal(stockInspection.query<{ count: number }>("SELECT count(*) count FROM stock_operations WHERE id = ?", [stockCreated.id])[0].count, 1);
-  assert.equal(stockInspection.query<{ count: number }>("SELECT count(*) count FROM idempotency_keys WHERE key IN ('http-stock-sql-receipt', 'http-stock-sql-reversal', 'http-stock-sql-inventory')")[0].count, 3);
+  assert.equal(stockInspection.query<{ count: number }>("SELECT count(*) count FROM idempotency_keys WHERE key IN ('http-stock-sql-receipt', 'http-stock-sql-reversal', 'http-stock-sql-inventory')")[0].count, 0);
   assert.equal(stockInspection.query<{ payload: string }>("SELECT payload FROM app_state WHERE id = 'main'")[0].payload, appStateBeforeStockCommands);
   stockInspection.close();
   const appStateBeforeScheduleCommands = openDatabase(databasePath, { readonly: true, fileMustExist: true })
@@ -309,11 +362,13 @@ try {
     headers: { cookie: superAdmin.cookie, "content-type": "application/json", "idempotency-key": "http-schedule-sql-day" },
     body: JSON.stringify({ status: "closed", comment: "SQL production day" })
   });
-  assert.equal(dayResponse.status, 201);
-  const scheduleInspection = openDatabase(databasePath, { readonly: true, fileMustExist: true });
-  assert.equal(scheduleInspection.query<{ count: number }>("SELECT count(*) count FROM shifts WHERE id = ?", [scheduleCreated.id])[0].count, 1);
-  assert.equal(scheduleInspection.query<{ payload: string }>("SELECT payload FROM app_state WHERE id = 'main'")[0].payload, appStateBeforeScheduleCommands);
+  assert.equal(dayResponse.status, 200);
+  const scheduleInspection = openDatabase(staffDatabasePath, { readonly: true, fileMustExist: true });
+  assert.equal(scheduleInspection.query<{ count: number }>("SELECT count(*) count FROM staff_shifts WHERE id = ?", [scheduleCreated.id])[0].count, 1);
   scheduleInspection.close();
+  const coreScheduleInspection = openDatabase(databasePath, { readonly: true, fileMustExist: true });
+  assert.equal(coreScheduleInspection.query<{ payload: string }>("SELECT payload FROM app_state WHERE id = 'main'")[0].payload, appStateBeforeScheduleCommands);
+  coreScheduleInspection.close();
   const appStateBeforeProductCommands = openDatabase(databasePath, { readonly: true, fileMustExist: true })
     .query<{ payload: string }>("SELECT payload FROM app_state WHERE id = 'main'")[0].payload;
   const productCreatedResponse = await fetch(`${first}/api/products`, {
@@ -321,19 +376,9 @@ try {
     headers: { cookie: superAdmin.cookie, "content-type": "application/json" },
     body: JSON.stringify({ officialName: "SQL production product", localName: "SQL product", unit: "шт", category: "Tests", lowStockThreshold: 1, sku: "SQL-TEST-1" })
   });
-  assert.equal(productCreatedResponse.status, 201);
-  const productCreated = await productCreatedResponse.json() as { id: string };
-  const productUpdatedResponse = await fetch(`${second}/api/products/${productCreated.id}`, {
-    method: "PATCH",
-    headers: { cookie: superAdmin.cookie, "content-type": "application/json" },
-    body: JSON.stringify({ localName: "SQL product updated" })
-  });
-  assert.equal(productUpdatedResponse.status, 200);
-  assert.equal((await productUpdatedResponse.json() as { localName: string }).localName, "SQL product updated");
-  const productFromSecond = await (await fetch(`${second}/api/products?q=sql%20product%20updated&status=all`, { headers: { cookie: superAdmin.cookie } })).json() as { items: Array<{ id: string }> };
-  assert.equal(productFromSecond.items.some((product) => product.id === productCreated.id), true);
+  assert.equal(productCreatedResponse.status, 410);
   const productInspection = openDatabase(databasePath, { readonly: true, fileMustExist: true });
-  assert.equal(productInspection.query<{ count: number }>("SELECT count(*) count FROM products WHERE id = ?", [productCreated.id])[0].count, 1);
+  assert.equal(productInspection.query<{ count: number }>("SELECT count(*) count FROM products WHERE official_name = 'SQL production product'")[0].count, 0);
   assert.equal(productInspection.query<{ payload: string }>("SELECT payload FROM app_state WHERE id = 'main'")[0].payload, appStateBeforeProductCommands);
   productInspection.close();
   const appStateBeforeLabels = openDatabase(databasePath, { readonly: true, fileMustExist: true })
@@ -341,7 +386,7 @@ try {
   const labelsPdfResponse = await fetch(`${first}/api/labels/pdf`, {
     method: "POST",
     headers: { cookie: superAdmin.cookie, "content-type": "application/json" },
-    body: JSON.stringify({ items: [{ productId: productCreated.id, quantity: 1 }] })
+    body: JSON.stringify({ items: [{ productId: "p-1", quantity: 1 }] })
   });
   assert.equal(labelsPdfResponse.status, 200);
   assert.equal(Buffer.from(await labelsPdfResponse.arrayBuffer()).subarray(0, 4).toString("ascii"), "%PDF");
@@ -382,8 +427,7 @@ try {
   const sellerCatalog = await (await fetch(`${first}/api/products?status=all&limit=100`, { headers: { cookie: sellerSession.cookie } })).json() as { items: Array<{ status: string }> };
   assert.equal(sellerCatalog.items.every((item) => item.status === "active"), true);
   const sellerSchedule = await (await fetch(`${first}/api/schedule`, { headers: { cookie: sellerSession.cookie } })).json() as Array<{ employeeIds: string[] }>;
-  assert.equal(sellerSchedule.some((shift) => shift.employeeIds.includes("u-seller")), true);
-  assert.equal(sellerSchedule.some((shift) => !shift.employeeIds.includes("u-seller")), true);
+  assert.equal(sellerSchedule.some((shift) => !shift.employeeIds.includes("u-seller")), false);
   assert.equal((await fetch(`${first}/api/audit`, { headers: { cookie: sellerSession.cookie } })).status, 403);
   assert.equal((await fetch(`${first}/api/saby/status`, { headers: { cookie: sellerSession.cookie } })).status, 403);
   const adminSession = await login(first, 1002);
@@ -463,6 +507,6 @@ try {
   console.log("session HTTP cross-process tests passed");
 } finally {
   for (const child of children.reverse()) child.kill("SIGTERM");
-  await Promise.all(children.map((child) => new Promise<void>((resolve) => child.once("exit", () => resolve()))));
+  await Promise.all(children.map((child) => new Promise<void>((resolve) => child.exitCode !== null ? resolve() : child.once("exit", () => resolve()))));
   fs.rmSync(root, { recursive: true, force: true });
 }

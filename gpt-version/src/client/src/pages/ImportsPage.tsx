@@ -17,6 +17,7 @@ export function ImportsPage({ client, session }: PageProps) {
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [message, setMessage] = useState("");
+  const [warehouseMode, setWarehouseMode] = useState(false);
   const canImport = session.permissions.includes("imports:write");
   const { confirm, confirmDialog } = useConfirm();
 
@@ -24,6 +25,8 @@ export function ImportsPage({ client, session }: PageProps) {
     setLoading(true);
     setMessage("");
     try {
+      const capabilities = await client.request<{ warehouseWriteMode: "legacy" | "fifo" }>("/api/runtime/capabilities");
+      if (capabilities.warehouseWriteMode === "fifo") { setWarehouseMode(true); return; }
       const [nextLocations, nextImports] = await Promise.all([
         client.request<Location[]>("/api/locations"),
         client.request<SupplyImport[]>("/api/imports")
@@ -113,6 +116,7 @@ export function ImportsPage({ client, session }: PageProps) {
   };
 
   if (loading) return <Skeleton />;
+  if (warehouseMode) return <section className="stack"><PageHeader title="Импорт" description="Недоступен в FIFO-режиме." /><Notice>Используйте «Склад → Принять поставку». Legacy-импорт не может менять Warehouse.</Notice></section>;
 
   return (
     <>

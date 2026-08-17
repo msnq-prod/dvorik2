@@ -1,6 +1,6 @@
 import { nanoid } from "nanoid";
 import { QuantityError, requireQuantity } from "../shared/quantity";
-import type { Location, Manufacturer, Product, ProductGroup, ProductIdentifier, ProductPackaging, ProductPriceHistory } from "../shared/types";
+import type { Location, Manufacturer, Permission, Product, ProductGroup, ProductIdentifier, ProductPackaging, ProductPriceHistory } from "../shared/types";
 import type { CommandContext, CommandMetadata } from "./command-context";
 import { CommandExecutor } from "./command-context";
 import { executeIdempotently, type IdempotencyResult } from "./idempotency";
@@ -17,6 +17,7 @@ export type CatalogCommandRepositories = Readonly<{
     saveManufacturer(manufacturer: Manufacturer, expectedVersion: number | null, at: string): "created" | "updated" | "duplicate" | "stale";
     appendPackaging(packaging: ProductPackaging, at: string): "created" | "duplicate";
     appendPrice(price: ProductPriceHistory): "created" | "duplicate";
+    appendBarcode(identifier: ProductIdentifier, at: string): "created" | "duplicate";
   }>;
   audit: Pick<AuditRepository, "append">;
   idempotency: IdempotencyRepository;
@@ -51,6 +52,7 @@ export type CreateProductInput = Readonly<{
 
 export type UpdateProductInput = Readonly<{
   productId: string;
+  photoUrl?: string;
   status?: Product["status"];
   localName?: string;
   category?: string;
@@ -60,16 +62,16 @@ export type UpdateProductInput = Readonly<{
   article?: string;
 }>; 
 
-const defaultPhoto = "https://images.unsplash.com/photo-1551024601-bec78aea704b?auto=format&fit=crop&w=900&q=80";
+const defaultPhoto = "";
 
 function response<const Status extends number>(status: Status, code: string, message: string, details?: JsonObject) {
   return { status, body: { code, message, ...(details ? { details } : {}) } } as const;
 }
 
-function authorized(context: CommandContext<CatalogCommandRepositories>) {
+function authorized(context: CommandContext<CatalogCommandRepositories>, permission: Permission = "products:write") {
   if (context.actor.kind !== "user") return undefined;
   const authorization = context.transaction.repositories.roles.getAuthorization(context.actor.userId);
-  return authorization.outcome === "found" && authorization.snapshot.permissions.includes("products:write")
+  return authorization.outcome === "found" && authorization.snapshot.permissions.includes(permission)
     ? authorization.snapshot
     : undefined;
 }
@@ -90,8 +92,16 @@ export class CatalogService {
   }
 
   create(metadata: CommandMetadata, input: CreateProductInput): CatalogCommandResult {
+    return this.createWithPermission(metadata, input, "products:write", "catalog.product.create");
+  }
+
+  quickCreate(metadata: CommandMetadata, input: CreateProductInput): CatalogCommandResult {
+    return this.createWithPermission(metadata, input, "products:scan_manage", "catalog.product.quick_scan");
+  }
+
+  private createWithPermission(metadata: CommandMetadata, input: CreateProductInput, permission: Permission, scope: string): CatalogCommandResult {
     return this.executor.execute(metadata, (context) => {
-      const actor = authorized(context);
+      const actor = authorized(context, permission);
       if (!actor) return { outcome: "rejected", ...response(403, "FORBIDDEN", "Недостаточно прав") } as const;
       const request = {
         officialName: input.officialName,
@@ -109,10 +119,43 @@ export class CatalogService {
         packageMassGrams: input.packageMassGrams ?? null,
         article: input.article ?? ""
       } satisfies JsonObject;
-      return executeIdempotently(context, "catalog.product.create", request, {
+      return executeIdempotently(context, scope, request, {
         processingTimeoutMs: this.options.processingTimeoutMs,
         retentionMs: this.options.idempotencyRetentionMs
       }, () => this.applyCreate(context, actor.userId, input));
+    }, { transactionMode: "immediate" });
+  }
+
+  addBarcode(metadata: CommandMetadata, input: Readonly<{ productId: string; barcode: string }>): CatalogCommandResult {
+    return this.executor.execute(metadata, (context) => {
+      const actor = authorized(context, "products:scan_manage");
+      if (!actor) return { outcome: "rejected", ...response(403, "FORBIDDEN", "Недостаточно прав") } as const;
+      const request = { productId: input.productId, barcode: input.barcode.trim() } satisfies JsonObject;
+      return executeIdempotently(context, "catalog.product.barcode.add", request, {
+        processingTimeoutMs: this.options.processingTimeoutMs,
+        retentionMs: this.options.idempotencyRetentionMs
+      }, () => {
+        const barcode = input.barcode.trim();
+        if (!barcode || barcode.length > 128) return response(400, "VALIDATION_ERROR", "Некорректный штрихкод");
+        const product = context.transaction.repositories.products.findById(input.productId);
+        if (!product || product.entity.status !== "active") return response(404, "NOT_FOUND", "Товар не найден");
+        const duplicate = context.transaction.repositories.products.findByIdentifier({ type: "barcode", value: barcode });
+        if (duplicate) {
+          if (duplicate.entity.id === product.entity.id) return { status: 200, body: jsonObject(duplicate.entity) } as const;
+          return response(409, "IDENTIFIER_CONFLICT", "Штрихкод уже принадлежит другому товару", { productId: duplicate.entity.id });
+        }
+        const at = context.clock.now();
+        const identifier: ProductIdentifier = { id: this.createId("identifier"), productId: product.entity.id, type: "barcode", value: barcode };
+        if (context.transaction.repositories.catalog.appendBarcode(identifier, at) !== "created") {
+          return response(409, "IDENTIFIER_CONFLICT", "Штрихкод уже используется");
+        }
+        const updated = { ...product.entity, identifiers: [...product.entity.identifiers, identifier] };
+        writeCreated(context.transaction.repositories.audit.append({
+          id: this.createId("audit"), actorId: actor.userId, entity: "product", entityId: product.entity.id, action: "barcode_add",
+          changes: { schemaVersion: 1, value: jsonObject(identifier) }, requestId: context.correlationId, createdAt: at
+        }, { at, expectedRevision: null }), "audit");
+        return { status: 201, body: jsonObject(updated) } as const;
+      });
     }, { transactionMode: "immediate" });
   }
 
@@ -122,6 +165,7 @@ export class CatalogService {
       if (!actor) return { outcome: "rejected", ...response(403, "FORBIDDEN", "Недостаточно прав") } as const;
       const request = {
         productId: input.productId,
+        photoUrl: input.photoUrl ?? null,
         status: input.status ?? null,
         localName: input.localName ?? null,
         category: input.category ?? null
@@ -142,7 +186,7 @@ export class CatalogService {
     if (!["шт", "кг", "л", "м"].includes(input.unit)) return response(400, "VALIDATION_ERROR", "Недопустимая единица измерения");
     let lowStockThreshold: number;
     try {
-      lowStockThreshold = requireQuantity(input.lowStockThreshold ?? 5, { unit: input.unit });
+      lowStockThreshold = requireQuantity(input.lowStockThreshold ?? 5, { unit: input.inventoryKind === "weight" ? "шт" : input.unit });
     } catch (error) {
       if (!(error instanceof QuantityError)) throw error;
       return response(400, "VALIDATION_ERROR", "Минимальный остаток имеет недопустимую точность");
@@ -204,6 +248,7 @@ export class CatalogService {
     }
     const next: Product = {
       ...current.entity,
+      photoUrl: input.photoUrl === undefined ? current.entity.photoUrl : input.photoUrl.trim(),
       status: input.status ?? current.entity.status,
       localName: input.localName === undefined ? current.entity.localName : input.localName.trim(),
       category: input.category === undefined ? current.entity.category : input.category.trim()
@@ -225,7 +270,7 @@ export class CatalogService {
     if (saved.outcome === "stale") return response(409, "VERSION_CONFLICT", "Товар уже изменён");
     writeCreated(context.transaction.repositories.audit.append({
       id: this.createId("audit"), actorId, entity: "product", entityId: next.id, action: "update",
-      changes: { schemaVersion: 1, value: { status: next.status, localName: next.localName, category: next.category } },
+      changes: { schemaVersion: 1, value: { status: next.status, localName: next.localName, category: next.category, photoUrl: next.photoUrl } },
       requestId: context.correlationId, createdAt: at
     }, { at, expectedRevision: null }), "audit");
     return { status: 200, body: jsonObject(next) } as const;

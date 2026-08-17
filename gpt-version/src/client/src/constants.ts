@@ -77,6 +77,7 @@ export const reportProductStatusLabels: Record<string, string> = {
 export const permissionLabels: Record<Permission, string> = {
   "products:read": "Товары: просмотр",
   "products:write": "Товары: запись",
+  "products:scan_manage": "Сканер: каталог",
   "stock:move": "Склад: движения",
   "inventory:write": "Инвентаризация",
   "reports:read": "Отчеты",

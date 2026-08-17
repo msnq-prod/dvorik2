@@ -30,6 +30,8 @@ npm run test
 npm run build
 npm audit --omit=dev
 npm run job:backup
+npm run job:backup:cash
+npm run job:backup:staff
 ```
 
 ## Реализовано
@@ -58,14 +60,21 @@ npm run job:backup
 - проверяемый SQLite+media backup job с retention и контролем свободного места;
 - Saby Retail: webhook-signal, официальный polling продаж, reconciliation,
   возвраты, late-state compensation и очередь сопоставления;
+- отдельные процессы и SQLite для Cash и Staff, подписанный внутренний HTTP,
+  retryable outbox и независимые backup-задачи;
+- поставки, партии, FIFO-себестоимость, весовые упаковки и продуктовая
+  рентабельность;
+- Company read-модели, объединяющие события Warehouse, Cash и Staff без чтения
+  их операционных таблиц;
 - SQLite persistence: `data/dvorik.sqlite`; production запрещает `DVORIK_STATE_FILE`.
 
 ## Ограничения
 
 - Saby подготовлен до стадии подключения реального аккаунта; его активация
   требует credentials, `pointId`, публичного URL и контрольной продажи/возврата.
-- Поставки/партии/FIFO, зарплата, финансы и production cutover не реализуются
-  без подтверждённых внешних входов.
+- Зарплата и полный финансовый учёт компании не входят в текущий контур.
 - Daily scheduler и desktop magic link не входят в текущий независимый scope.
 
 Настройка Saby: [docs/SABY_INTEGRATION.md](docs/SABY_INTEGRATION.md).
+Запуск и переключение модульной архитектуры:
+[docs/MODULAR_RUNTIME.md](docs/MODULAR_RUNTIME.md).
