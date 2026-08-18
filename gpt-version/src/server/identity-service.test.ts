@@ -25,6 +25,7 @@ type FakeState = {
   activeSessions: Map<string, number>;
   audits: Map<string, RepositoryRecord<RepositoryAuditEntry>>;
   outbox: Map<string, RepositoryRecord<RepositoryOutboxMessage>>;
+  identityOutbox: Map<string, Readonly<{ userId: string; status: UserStatus; identityRevision: number; correlationId: string }>>;
   idempotency: Map<string, RepositoryRecord<IdempotencyRecord>>;
 };
 
@@ -68,6 +69,7 @@ function initialState(): FakeState {
     activeSessions: new Map([["u-super", 1], ["u-admin", 1], ["u-seller", 1], ["u-target", 2], ["u-pending", 1]]),
     audits: new Map(),
     outbox: new Map(),
+    identityOutbox: new Map(),
     idempotency: new Map()
   };
 }
@@ -245,6 +247,13 @@ function repositories(state: FakeState, fault?: FaultStage): IdentityCommandRepo
         return { outcome: "created", record: created };
       }
     },
+    identityOutbox: {
+      enqueue(event) {
+        if (state.identityOutbox.has(event.eventId) || [...state.identityOutbox.values()].some((item) => item.userId === event.userId && item.identityRevision === event.identityRevision)) return { outcome: "duplicate" };
+        state.identityOutbox.set(event.eventId, { userId: event.userId, status: event.status, identityRevision: event.identityRevision, correlationId: event.correlationId });
+        return { outcome: "created" };
+      }
+    },
     idempotency: fault === "idempotency_completion" ? {
       ...idempotency,
       find: idempotency.find.bind(idempotency),
@@ -323,6 +332,7 @@ function code(result: unknown) {
   assert.equal(database.state.activeSessions.get("u-target"), 0);
   assert.equal(database.state.audits.size, 1);
   assert.equal(database.state.outbox.size, 1);
+  assert.equal(database.state.identityOutbox.size, 0);
 }
 
 {
@@ -362,6 +372,7 @@ function code(result: unknown) {
   assert.deepEqual(service.onboard(metadata("onboard-replay"), "u-pending", "approve", "seller"), { ...first, outcome: "replayed" });
   assert.equal(database.state.audits.size, 1);
   assert.equal(database.state.outbox.size, 1);
+  assert.equal(database.state.identityOutbox.size, 1);
   assert.deepEqual(service.onboard(metadata("onboard-replay"), "u-pending", "approve", "admin"), {
     outcome: "conflict", status: 409, code: "IDEMPOTENCY_CONFLICT"
   });
@@ -405,6 +416,7 @@ for (const fault of ["audit", "outbox", "idempotency_completion"] as const) {
   assert.deepEqual(database.state.activeSessions, before.activeSessions);
   assert.deepEqual(database.state.audits, before.audits);
   assert.deepEqual(database.state.outbox, before.outbox);
+  assert.deepEqual(database.state.identityOutbox, before.identityOutbox);
   assert.deepEqual(database.state.idempotency, before.idempotency);
 }
 

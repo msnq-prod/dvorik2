@@ -6,6 +6,7 @@ export class WarehouseClient {
   status() { return this.internal("/internal/status"); }
   balances() { return this.internal("/internal/balances"); }
   catalog() { return this.internal("/internal/catalog"); }
+  resolveScan(input: Readonly<{ rawValue: string; format: string }>) { return this.internal("/internal/scan/resolve", { method: "POST", body: JSON.stringify(input) }); }
   createCatalogProduct(input: object) { return this.internal("/internal/catalog/products", { method: "POST", body: JSON.stringify(input) }); }
   recentlyDepleted(since: string, limit = 8) { return this.internal(`/internal/recently-depleted?since=${encodeURIComponent(since)}&limit=${limit}`); }
   priceCategories() { return this.internal("/internal/price-categories"); }

@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import type { EmployeeProfile, HrEvent, HrEventType, ScheduleDay, Shift, ShiftExchangeRequest, UserStatus } from "../shared/types";
 import type { DatabaseAdapter, DatabaseContext } from "../server/database";
 import type { StaffEvent } from "../contracts/events";
+import type { IdentityEvent } from "../contracts/events";
 import { signInternalRequest } from "../cash/signature";
 
 function validDate(value: string) { return /^\d{4}-\d{2}-\d{2}$/.test(value) && new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value; }
@@ -16,6 +17,22 @@ export class StaffService {
     if (!input.userId) throw new Error("USER_ID_REQUIRED");
     this.database.execute(`INSERT INTO staff_identity_snapshots(platform_user_id,status,updated_at) VALUES (?,?,?)
       ON CONFLICT(platform_user_id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at`, [input.userId, input.status, this.now()]);
+  }
+
+  applyIdentityEvent(event: IdentityEvent): Readonly<{ status: "applied" | "duplicate" | "stale" }> {
+    const payload = event.payload;
+    if (event.eventVersion !== 1 || !event.eventId || !payload.userId || !Number.isSafeInteger(payload.identityRevision) || payload.identityRevision < 0) throw new Error("BAD_IDENTITY_EVENT");
+    return this.database.transaction((db) => {
+      if (db.query("SELECT event_id FROM staff_identity_inbox WHERE event_id=?", [event.eventId]).length) return { status: "duplicate" as const };
+      const current = db.query<{ core_revision: number }>("SELECT core_revision FROM staff_identity_snapshots WHERE platform_user_id=?", [payload.userId])[0];
+      const outcome = current && current.core_revision >= payload.identityRevision ? "stale" as const : "applied" as const;
+      if (outcome === "applied") {
+        db.execute(`INSERT INTO staff_identity_snapshots(platform_user_id,status,updated_at,core_revision) VALUES (?,?,?,?)
+          ON CONFLICT(platform_user_id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at,core_revision=excluded.core_revision`, [payload.userId, payload.status, event.occurredAt, payload.identityRevision]);
+      }
+      db.execute("INSERT INTO staff_identity_inbox(event_id,user_id,identity_revision,status,correlation_id,received_at,outcome) VALUES (?,?,?,?,?,?,?)", [event.eventId, payload.userId, payload.identityRevision, payload.status, payload.correlationId, this.now(), outcome]);
+      return { status: outcome };
+    }, { mode: "immediate" });
   }
 
   status(){

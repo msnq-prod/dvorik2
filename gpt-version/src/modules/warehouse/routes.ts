@@ -3,7 +3,7 @@ import type { CashStatus } from "../../contracts/cash";
 import type { User } from "../../shared/types";
 type Awaitable<T> = T | Promise<T>;
 type WarehousePort = Readonly<{
-  suppliers(): Awaitable<unknown>; balances(): Awaitable<unknown>; catalog?(): Awaitable<unknown>; createCatalogProduct?(input:unknown):Awaitable<unknown>; journal?(from?: string,to?: string): Awaitable<unknown>; lots(productId?: string): Awaitable<unknown>;
+  suppliers(): Awaitable<unknown>; balances(): Awaitable<unknown>; catalog?(): Awaitable<unknown>; resolveScan?(input:unknown):Awaitable<unknown>; createCatalogProduct?(input:unknown):Awaitable<unknown>; journal?(from?: string,to?: string): Awaitable<unknown>; lots(productId?: string): Awaitable<unknown>;
   recentlyDepleted?(since:string,limit?:number):Awaitable<unknown>;
   priceCategories?():Awaitable<unknown>; priceCategory?(id:string):Awaitable<unknown>;
   createPriceCategory?(input:unknown):Awaitable<unknown>; updatePriceCategory?(id:string,input:unknown):Awaitable<unknown>;
@@ -42,6 +42,12 @@ export function registerWarehouseRoutes(app:express.Express,deps:Dependencies){
     const user=deps.actor(req);deps.requirePermission(user,"products:read");
     if(!deps.service?.catalog)throw deps.error("SERVICE_UNAVAILABLE","Складской сервис недоступен",503);
     res.json(await deps.service.catalog());
+  }));
+  app.post("/api/warehouse/scan/resolve",route(async(req,res)=>{
+    const user=deps.actor(req);deps.requirePermission(user,"products:read");
+    if(!deps.service?.resolveScan)throw deps.error("SERVICE_UNAVAILABLE","Складской сервис недоступен",503);
+    try { res.json(await deps.service.resolveScan({rawValue:String(req.body.rawValue??""),format:String(req.body.format??"")})); }
+    catch(error){throw deps.error(error instanceof Error?error.message:"SCAN_RESOLVE_FAILED","Не удалось распознать код",422);}
   }));
   app.post("/api/warehouse/products",route(async(req,res)=>{
     const user=deps.actor(req);deps.requirePermission(user,"products:write");

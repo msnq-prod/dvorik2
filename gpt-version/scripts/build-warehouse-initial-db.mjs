@@ -4,7 +4,10 @@ import BetterSqlite3 from "better-sqlite3";
 
 const seedPath = path.resolve("data/warehouse-initial-seed.json");
 // This is a standalone Warehouse database. It does not share the legacy Core DB.
-const databasePath = path.resolve("data/warehouse.sqlite");
+const configuredDatabasePath = process.env.DVORIK_WAREHOUSE_SQLITE_FILE?.trim();
+const databasePath = configuredDatabasePath || path.resolve("data/warehouse.sqlite");
+if (!path.isAbsolute(databasePath)) throw new Error("DVORIK_WAREHOUSE_SQLITE_FILE must be an absolute path when provided");
+fs.mkdirSync(path.dirname(databasePath), { recursive: true });
 const seed = JSON.parse(fs.readFileSync(seedPath, "utf8"));
 if (fs.existsSync(databasePath)) fs.rmSync(databasePath);
 const db = new BetterSqlite3(databasePath);

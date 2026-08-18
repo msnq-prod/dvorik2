@@ -67,6 +67,21 @@ export type StaffSnapshotUpdatedPayload = Readonly<{
 export type StaffEvent =
   DomainEventEnvelope<"StaffSnapshotUpdated", StaffSnapshotUpdatedPayload>;
 
+/**
+ * Core → Staff identity projection contract. `identityRevision` is the Core
+ * user revision after the status write; Staff must ignore older revisions and
+ * treat the same eventId as a no-op.
+ */
+export type IdentityStatusChangedPayload = Readonly<{
+  userId: string;
+  status: "pending" | "active" | "blocked" | "rejected" | "archived";
+  identityRevision: number;
+  correlationId: string;
+}>;
+
+export type IdentityEvent =
+  DomainEventEnvelope<"IdentityStatusChanged", IdentityStatusChangedPayload>;
+
 export type EventDeliveryResult = Readonly<{
   eventId: string;
   status: "applied" | "duplicate" | "requires_action";

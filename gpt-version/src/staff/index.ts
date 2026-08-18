@@ -1,15 +1,16 @@
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { openDatabase } from "../server/database";
-import { applyMigrations } from "../server/migrations";
+import { checkDatabaseReadiness, openDatabase } from "../server/database";
+import { applyMigrations, listMigrations } from "../server/migrations";
 import { verifyInternalRequest } from "../cash/signature";
 import { loadStaffRuntimeConfig } from "./config";
 import { StaffService } from "./staff-service";
 
 const config = loadStaffRuntimeConfig();
 const database = openDatabase(config.databaseFile);
-applyMigrations(database, path.resolve(path.dirname(fileURLToPath(import.meta.url)), "migrations"));
+const migrationsDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "migrations");
+applyMigrations(database, migrationsDirectory);
 const service = new StaffService(database, () => new Date().toISOString(), { coreBaseUrl: config.coreBaseUrl, internalSecret: config.internalSecret });
 const app = express();
 app.disable("x-powered-by");
@@ -20,8 +21,17 @@ function internal(req: express.Request, res: express.Response, next: express.Nex
   next();
 }
 app.get("/live", (_req, res) => res.json({ live: true }));
-app.get("/ready", (_req, res) => { try { database.query("SELECT 1"); res.json({ ready: true }); } catch { res.status(503).json({ ready: false }); } });
+app.get("/ready", (_req, res) => {
+  const schema = checkDatabaseReadiness(database, listMigrations(migrationsDirectory).map((migration) => migration.version), ["staff_identity_snapshots", "staff_employee_profiles", "staff_event_outbox"]);
+  const status = schema.ready ? service.status() : undefined;
+  if (!schema.ready || (status?.failedEvents ?? 0) > 0) {
+    res.status(503).json({ ready: false, code: schema.ready ? "STAFF_OUTBOX_FAILED" : schema.code, ...(status ? { outbox: status } : {}) });
+    return;
+  }
+  res.json({ ready: true, outbox: status });
+});
 app.post("/internal/identities", internal, (req, res) => { try { service.upsertIdentity(req.body); res.status(204).end(); } catch (error) { res.status(422).json({ code: error instanceof Error ? error.message : "IDENTITY_FAILED" }); } });
+app.post("/internal/identity-events", internal, (req, res) => { try { res.json(service.applyIdentityEvent(req.body)); } catch (error) { res.status(422).json({ code: error instanceof Error ? error.message : "IDENTITY_EVENT_FAILED" }); } });
 app.get("/internal/profiles", internal, (_req, res) => res.json(service.profiles()));
 app.get("/internal/status", internal, (_req,res)=>res.json(service.status()));
 app.put("/internal/profiles/:id", internal, (req, res) => { try { res.json(service.saveProfile({ ...req.body, userId: req.params.id })); } catch (error) { res.status(409).json({ code: error instanceof Error ? error.message : "PROFILE_FAILED" }); } });

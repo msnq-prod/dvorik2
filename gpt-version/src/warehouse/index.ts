@@ -1,11 +1,15 @@
 import express from "express";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { openDatabase } from "../server/database";
+import { applyMigrations } from "../server/migrations";
 import { signInternalRequest, verifyInternalRequest } from "../cash/signature";
 import { WarehouseService } from "../modules/warehouse";
 import { loadWarehouseRuntimeConfig } from "./config";
 
 const config = loadWarehouseRuntimeConfig();
 const database = openDatabase(config.databaseFile, { fileMustExist: true });
+applyMigrations(database, path.resolve(path.dirname(fileURLToPath(import.meta.url)), "migrations"));
 const service = new WarehouseService(database);
 const app = express();
 app.disable("x-powered-by");
@@ -39,6 +43,7 @@ app.get("/ready", (_req, res) => {
 app.get("/internal/status", internal, (_req, res) => res.json(service.status()));
 app.get("/internal/balances", internal, (_req, res) => res.json(service.balances()));
 app.get("/internal/catalog", internal, (_req, res) => res.json(service.catalog()));
+app.post("/internal/scan/resolve", internal, (req, res) => { try { res.json(service.resolveScan({ rawValue: String(req.body.rawValue ?? ""), format: String(req.body.format ?? "") as import("./scan-contract").ScanFormat })); } catch (error) { requestError(res, error); } });
 app.post("/internal/catalog/products", internal, (req, res) => { try { res.status(201).json(service.createCatalogProduct(req.body)); } catch (error) { requestError(res, error); } });
 app.get("/internal/recently-depleted", internal, (req, res) => res.json(service.recentlyDepleted(String(req.query.since || ""), Number(req.query.limit || 8))));
 app.get("/internal/price-categories", internal, (_req, res) => res.json(service.priceCategories()));

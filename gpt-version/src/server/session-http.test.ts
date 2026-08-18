@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -39,7 +39,12 @@ legacyState.sessions.push({
 bootstrapDatabase.executeScript(buildNormalizedStateSql(legacyState));
 bootstrapDatabase.execute("INSERT INTO app_state(id,payload,updated_at) VALUES ('main',?,?)", [JSON.stringify(legacyState), new Date().toISOString()]);
 bootstrapDatabase.close();
-fs.copyFileSync(databasePath, warehouseDatabasePath);
+const warehouseBootstrap = spawnSync(process.execPath, [path.resolve("scripts/build-warehouse-initial-db.mjs")], {
+  cwd: process.cwd(),
+  env: { ...process.env, DVORIK_WAREHOUSE_SQLITE_FILE: warehouseDatabasePath },
+  encoding: "utf8"
+});
+if (warehouseBootstrap.status !== 0) throw new Error(`Warehouse bootstrap failed: ${warehouseBootstrap.stderr || warehouseBootstrap.stdout}`);
 
 const environment = {
   ...process.env,

@@ -18,7 +18,7 @@ services:
 
   warehouse:
     build: .
-    command: ["sh", "-c", "test -f /data/warehouse.sqlite || cp /seed/warehouse.sqlite /data/warehouse.sqlite; npm run start:warehouse"]
+    command: ["sh", "-c", "test -f /data/warehouse.sqlite || node scripts/build-warehouse-initial-db.mjs; npm run start:warehouse"]
     env_file: ${DVORIK_ENV_FILE:-.env.modular}
     environment:
       DVORIK_WAREHOUSE_SQLITE_FILE: /data/warehouse.sqlite
@@ -51,6 +51,19 @@ services:
       DVORIK_WAREHOUSE_BASE_URL: http://warehouse:3303
     volumes: ["core-data:/data"]
     depends_on: [core]
+
+  staff-identity-worker:
+    build: .
+    command: ["npm", "run", "worker:staff-identity"]
+    env_file: ${DVORIK_ENV_FILE:-.env.modular}
+    environment:
+      DVORIK_SQLITE_FILE: /data/core.sqlite
+      DVORIK_STAFF_MODE: external
+      DVORIK_STAFF_BASE_URL: http://staff:3202
+      DVORIK_WAREHOUSE_MODE: external
+      DVORIK_WAREHOUSE_BASE_URL: http://warehouse:3303
+    volumes: ["core-data:/data"]
+    depends_on: [core, staff]
 
 volumes:
   core-data:

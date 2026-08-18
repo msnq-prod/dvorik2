@@ -38,6 +38,9 @@ export type IdentityCommandRepositories = Readonly<{
   sessions: Pick<SessionsRepository, "revokeActiveForUser">;
   audit: Pick<AuditRepository, "append">;
   outbox: Pick<OutboxRepository, "enqueue">;
+  identityOutbox: Readonly<{
+    enqueue(event: Readonly<{ eventId: string; userId: string; status: UserStatus; identityRevision: number; correlationId: string; occurredAt: UtcTimestamp }>): Readonly<{ outcome: "created" | "duplicate" }>;
+  }>;
   idempotency: IdempotencyRepository;
 }>;
 
@@ -59,7 +62,7 @@ export type IdentityServiceOptions = Readonly<{
   processingTimeoutMs: number;
   idempotencyRetentionMs: number;
   outboxMaxAttempts: number;
-  createId?: (kind: "audit" | "outbox") => string;
+  createId?: (kind: "audit" | "outbox" | "identity_event") => string;
 }>;
 
 const statuses = new Set<UserStatus>(["pending", "active", "blocked", "rejected", "archived"]);
@@ -284,6 +287,14 @@ export class IdentityService {
     if (roleChanged) current = repositories.users.assignPrimaryRole(targetUserId, nextRole, { actorId, at });
 
     const revokedSessions = repositories.sessions.revokeActiveForUser(targetUserId, at);
+    if (statusChanged) {
+      const identityRevision = Number(current.revision);
+      if (!Number.isSafeInteger(identityRevision) || identityRevision < 0) throw new Error("Identity revision is invalid");
+      created(repositories.identityOutbox.enqueue({
+        eventId: this.createId("identity_event"), userId: targetUserId, status: nextStatus,
+        identityRevision, correlationId: context.correlationId, occurredAt: at
+      }), "staff identity outbox");
+    }
     const changes: JsonObject = {
       action,
       before: { status: beforeStatus, role: beforeRole },

@@ -290,6 +290,19 @@ function createOutboxRepository(database: DatabaseContext): IdentityCommandRepos
   };
 }
 
+function createIdentityOutboxRepository(database: DatabaseContext): IdentityCommandRepositories["identityOutbox"] {
+  return {
+    enqueue(event) {
+      const result = database.execute(
+        `INSERT INTO staff_identity_outbox(event_id,user_id,status,identity_revision,correlation_id,occurred_at,state,available_at,created_at)
+         VALUES (?,?,?,?,?,?,'pending',?,?) ON CONFLICT(user_id,identity_revision) DO NOTHING`,
+        [event.eventId, event.userId, event.status, event.identityRevision, event.correlationId, event.occurredAt, event.occurredAt, event.occurredAt]
+      );
+      return { outcome: result.changes === 1 ? "created" : "duplicate" };
+    }
+  };
+}
+
 export function createSqliteIdentityCommandRepositories(database: DatabaseContext): IdentityCommandRepositories {
   return Object.freeze({
     users: createUsersRepository(database),
@@ -297,6 +310,7 @@ export function createSqliteIdentityCommandRepositories(database: DatabaseContex
     sessions: createSessionsRepository(database),
     audit: createAuditRepository(database),
     outbox: createOutboxRepository(database),
+    identityOutbox: createIdentityOutboxRepository(database),
     idempotency: createSqliteIdempotencyRepository(database)
   });
 }

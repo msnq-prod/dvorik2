@@ -13,6 +13,8 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "dvorik-warehouse-module-"));
 const database = openDatabase(path.join(root, "warehouse.sqlite"));
 database.executeScript("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL); INSERT INTO schema_migrations VALUES (1,datetime('now'));");
 applyMigrations(database);
+database.executeScript(fs.readFileSync(path.resolve("src/warehouse/migrations/002_service_tables.sql"), "utf8"));
+database.executeScript(fs.readFileSync(path.resolve("src/warehouse/migrations/003_product_identifiers.sql"), "utf8"));
 database.executeScript(buildNormalizedStateSql(createSeedState()));
 database.execute("INSERT INTO product_price_history(id,product_id,price_kopecks,price_unit,effective_from,created_at) VALUES ('price-test','p-1',180000,'piece','2026-01-01','2026-01-01')");
 const service = new WarehouseService(database, () => "2026-07-27T00:00:00.000Z");

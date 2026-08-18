@@ -1,4 +1,5 @@
 import type { EmployeeProfile, HrEvent, ScheduleDay, Shift, ShiftExchangeRequest, UserStatus } from "../shared/types";
+import type { IdentityEvent } from "../contracts/events";
 import { signInternalRequest } from "../cash/signature";
 
 export class StaffClient {
@@ -10,6 +11,7 @@ export class StaffClient {
     return this.internal<HrEvent[]>(`/internal/hr-events${query.size ? `?${query}` : ""}`);
   }
   async syncIdentity(input: Readonly<{ userId: string; status: UserStatus }>) { await this.internal("/internal/identities", { method: "POST", body: JSON.stringify(input) }); }
+  applyIdentityEvent(event: IdentityEvent) { return this.internal<{ status: "applied" | "duplicate" | "stale" }>("/internal/identity-events", { method: "POST", body: JSON.stringify(event) }); }
   saveProfile(userId: string, input: object) { return this.internal<EmployeeProfile>(`/internal/profiles/${encodeURIComponent(userId)}`, { method: "PUT", body: JSON.stringify(input) }); }
   recordHrEvent(input: object) { return this.internal<HrEvent>("/internal/hr-events", { method: "POST", body: JSON.stringify(input) }); }
   schedule(input: Readonly<{ userId?: string; from?: string; to?: string }>) { return this.query<Shift[]>("/internal/schedule", input); }

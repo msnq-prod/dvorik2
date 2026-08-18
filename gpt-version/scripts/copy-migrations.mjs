@@ -13,4 +13,8 @@ const staffSource = path.resolve("src/staff/migrations");
 const staffDestination = path.resolve("dist/staff/migrations");
 fs.rmSync(staffDestination, { recursive: true, force: true });
 fs.cpSync(staffSource, staffDestination, { recursive: true });
+const warehouseSource = path.resolve("src/warehouse/migrations");
+const warehouseDestination = path.resolve("dist/warehouse/migrations");
+fs.rmSync(warehouseDestination, { recursive: true, force: true });
+fs.cpSync(warehouseSource, warehouseDestination, { recursive: true });
 console.log("Copied SQL migrations to dist/migrations");

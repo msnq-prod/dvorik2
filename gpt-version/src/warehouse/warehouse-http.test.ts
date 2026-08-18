@@ -26,7 +26,7 @@ try {
     child.stdout.on("data", ready);
     child.once("exit", (code) => { clearTimeout(timeout); reject(new Error(`Warehouse exited: ${code}; ${output}`)); });
   });
-  assert.deepEqual(await (await fetch(`http://127.0.0.1:${port}/ready`)).json(), { ready: true });
+  assert.deepEqual(await (await fetch(`http://127.0.0.1:${port}/ready`)).json(), { ready: true, discrepancies: [] });
   assert.equal((await fetch(`http://127.0.0.1:${port}/internal/status`)).status, 401);
   const client = new WarehouseClient(`http://127.0.0.1:${port}`, secret);
   assert.deepEqual(await client.cutoverReadiness(), { ready: true, discrepancies: [] });

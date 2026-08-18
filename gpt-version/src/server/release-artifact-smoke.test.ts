@@ -29,12 +29,15 @@ const environment = {
   DVORIK_SESSION_SECRET: "artifact-production-session-secret-at-least-32-bytes",
   DVORIK_STAFF_MODE: "external",
   DVORIK_STAFF_BASE_URL: "http://127.0.0.1:3202",
+  DVORIK_WAREHOUSE_MODE: "external",
+  DVORIK_WAREHOUSE_BASE_URL: "http://127.0.0.1:3303",
   DVORIK_INTERNAL_SECRET: "artifact-internal-secret-at-least-32-bytes"
 };
 
 assert.equal(fs.existsSync(path.resolve("dist/index.js")), true, "Build artifact is missing");
 assert.equal(fs.existsSync(path.resolve("dist/backup-job.js")), true, "Backup job artifact is missing");
 assert.equal(fs.existsSync(path.resolve("dist/warehouse-company-worker.js")), true, "Company worker artifact is missing");
+assert.equal(fs.existsSync(path.resolve("dist/staff-identity-worker.js")), true, "Staff identity worker artifact is missing");
 assert.equal(fs.existsSync(path.resolve("dist/cash/index.js")), true, "Cash service artifact is missing");
 assert.equal(fs.existsSync(path.resolve("dist/cash/backup-job.js")), true, "Cash backup job artifact is missing");
 assert.equal(fs.existsSync(path.resolve("dist/staff/index.js")), true, "Staff service artifact is missing");
@@ -45,6 +48,7 @@ assert.equal(fs.existsSync(path.resolve("dist/public/index.html")), true, "Built
 assert.equal(fs.existsSync(path.resolve("dist/migrations/008_identity_user_version.sql")), true, "Migrations are missing from artifact");
 assert.equal(fs.existsSync(path.resolve("dist/cash/migrations/001_cash_schema.sql")), true, "Cash migrations are missing from artifact");
 assert.equal(fs.existsSync(path.resolve("dist/staff/migrations/003_staff_outbox.sql")), true, "Staff migrations are missing from artifact");
+assert.equal(fs.existsSync(path.resolve("dist/warehouse/migrations/002_service_tables.sql")), true, "Warehouse migrations are missing from artifact");
 
 const child = spawn(process.execPath, ["dist/index.js"], { cwd: process.cwd(), env: environment, stdio: ["ignore", "pipe", "pipe"] });
 let output = "";
@@ -74,9 +78,12 @@ try {
   assert.equal((await fetch(`http://127.0.0.1:${port}/api/dev/config`)).status, 404);
   assert.equal((await fetch(`http://127.0.0.1:${port}/`)).status, 200);
 } finally {
-  if (!child.killed) child.kill("SIGTERM");
-  const exit = await new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
-  assert.equal(exit, 0, output);
+  if (child.exitCode === null && child.signalCode === null) {
+    const exited = new Promise<Readonly<{ code: number | null; signal: NodeJS.Signals | null }>>((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+    child.kill("SIGKILL");
+    const exit = await exited;
+    assert.equal(exit.signal, "SIGKILL", output);
+  }
 }
 
 const backupJob = spawnSync(process.execPath, ["dist/backup-job.js"], { cwd: process.cwd(), env: environment, encoding: "utf8" });

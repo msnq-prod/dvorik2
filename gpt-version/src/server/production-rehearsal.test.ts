@@ -12,15 +12,15 @@ for (const rehearsal of ["first", "second"]) {
   const source = openDatabase(sourcePath);
   source.executeScript("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL); INSERT INTO schema_migrations VALUES (1, datetime('now'));");
   const dryRun = inspectMigrations(source);
-  assert.equal(dryRun.pending.length, 16);
-  assert.equal(applyMigrations(source).length, 16);
+  assert.equal(dryRun.pending.length, 18);
+  assert.equal(applyMigrations(source).length, 18);
   assert.equal(inspectMigrations(source).pending.length, 0);
   source.execute("INSERT INTO roles(id,name) VALUES ('seller','seller')");
   const media = path.join(root, "media");
   fs.mkdirSync(media);
   fs.writeFileSync(path.join(media, `${rehearsal}.txt`), rehearsal);
   const backup = createSqliteBackupBundle({ database: source, backupDirectory: path.join(root, "backups"), mediaDirectory: media });
-  assert.equal(verifySqliteBackupBundle(backup.path).migrations.length, 17);
+  assert.equal(verifySqliteBackupBundle(backup.path).migrations.length, 19);
   source.execute("INSERT INTO roles(id,name) VALUES ('post-backup','post-backup')");
   source.close();
   const rollbackPath = path.join(root, "rollback.sqlite");

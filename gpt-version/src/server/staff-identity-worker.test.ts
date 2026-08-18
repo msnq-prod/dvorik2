@@ -1,0 +1,24 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { openDatabase } from "./database";
+import { applyMigrations } from "./migrations";
+import { dispatchStaffIdentityOutbox } from "./staff-identity-worker";
+import { buildNormalizedStateSql } from "./state-migration";
+import { createSeedState } from "./store";
+
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "dvorik-staff-identity-worker-"));
+const database = openDatabase(path.join(root, "core.sqlite"));
+database.executeScript("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL); INSERT INTO schema_migrations VALUES (1,datetime('now'));");
+applyMigrations(database, path.resolve("src/server/migrations"));
+database.executeScript(buildNormalizedStateSql(createSeedState()));
+database.execute("INSERT INTO users(id,status,first_name,last_name,username,created_at,updated_at,version) VALUES ('identity-worker-user','active','Worker','Test','worker',datetime('now'),datetime('now'),0)");
+database.execute("INSERT INTO staff_identity_outbox(event_id,user_id,status,identity_revision,correlation_id,occurred_at,state,available_at,created_at) VALUES ('identity-event-1','identity-worker-user','blocked',3,'test:identity','2026-08-17T00:00:00.000Z','pending','2026-08-17T00:00:00.000Z','2026-08-17T00:00:00.000Z')");
+const delivered: unknown[] = [];
+const result = await dispatchStaffIdentityOutbox(database, { async applyIdentityEvent(event) { delivered.push(event); return { status: "applied" }; } }, new Date("2026-08-17T00:01:00.000Z"));
+assert.deepEqual(result, { claimed: 1, sent: 1, failed: 0 });
+assert.deepEqual(delivered, [{ eventId: "identity-event-1", eventType: "IdentityStatusChanged", eventVersion: 1, producer: "platform", aggregateId: "identity-worker-user", occurredAt: "2026-08-17T00:00:00.000Z", payload: { userId: "identity-worker-user", status: "blocked", identityRevision: 3, correlationId: "test:identity" } }]);
+assert.deepEqual(database.query<{ state: string; attempt_count: number }>("SELECT state,attempt_count FROM staff_identity_outbox WHERE event_id='identity-event-1'"), [{ state: "sent", attempt_count: 0 }]);
+database.close();
+console.log("staff identity worker tests passed");

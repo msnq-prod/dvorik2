@@ -4,7 +4,7 @@ type ScannerStatus = "starting" | "active" | "blocked" | "unsupported" | "error"
 
 type BarcodeScannerProps = Readonly<{
   active: boolean;
-  onDetected(barcode: string): void;
+  onDetected(rawValue: string, format: "EAN_8" | "EAN_13" | "CODE_128"): void;
 }>;
 
 export function BarcodeScanner({ active, onDetected }: BarcodeScannerProps) {
@@ -52,13 +52,15 @@ export function BarcodeScanner({ active, onDetected }: BarcodeScannerProps) {
           videoRef.current,
           (result) => {
             if (!result || disposed || generationRef.current !== generation) return;
-            const value = result.getText().trim();
+            const value = result.getText();
             if (!value) return;
+            const format = result.getBarcodeFormat().toString() as "EAN_8" | "EAN_13" | "CODE_128";
+            if (!["EAN_8", "EAN_13", "CODE_128"].includes(format)) return;
             const now = Date.now();
             const last = lastDetectionRef.current;
             if (last.value === value && now - last.at < 2_500) return;
             lastDetectionRef.current = { value, at: now };
-            callbackRef.current(value);
+            callbackRef.current(value, format);
           }
         );
         if (disposed || generationRef.current !== generation) {
@@ -90,15 +92,6 @@ export function BarcodeScanner({ active, onDetected }: BarcodeScannerProps) {
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, [active, stop]);
-
-  useEffect(() => {
-    const onExternalScan = (event: Event) => {
-      const barcode = event instanceof CustomEvent ? String(event.detail || "").trim() : "";
-      if (active && barcode) callbackRef.current(barcode);
-    };
-    window.addEventListener("dvorik:barcode-scan", onExternalScan);
-    return () => window.removeEventListener("dvorik:barcode-scan", onExternalScan);
-  }, [active]);
 
   const retry = () => setRestartToken((value) => value + 1);
 
