@@ -154,7 +154,7 @@ const mediaStorage = createMediaStorage({
   bucket: runtimeConfig.objectStorage?.bucket,
   publicBaseUrl: runtimeConfig.objectStorage?.publicBaseUrl,
   token: runtimeConfig.objectStorage?.token,
-  allowLocalFallback: !runtimeConfig.production
+  allowLocalFallback: !runtimeConfig.production || process.env.DVORIK_LOCAL_MEDIA_ONLY === "1"
 });
 const devToolsEnabled = runtimeConfig.devToolsEnabled;
 const hardenedSessionsEnabled = runtimeConfig.production || Boolean(process.env.DVORIK_SQLITE_FILE);
