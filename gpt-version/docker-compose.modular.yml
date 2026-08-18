@@ -7,13 +7,14 @@ services:
       DVORIK_SQLITE_FILE: /data/core.sqlite
       DVORIK_MEDIA_DIR: /data/media
       DVORIK_BACKUP_DIR: /data/backups
+      PORT: 3001
       DVORIK_CASH_MODE: disabled
       DVORIK_STAFF_MODE: external
       DVORIK_STAFF_BASE_URL: http://staff:3202
       DVORIK_WAREHOUSE_MODE: external
       DVORIK_WAREHOUSE_BASE_URL: http://warehouse:3303
     volumes: ["core-data:/data"]
-    ports: ["3001:3001"]
+    ports: ["${DVORIK_WEB_BIND_ADDRESS:-127.0.0.1}:${DVORIK_WEB_PORT:-58082}:3001"]
     depends_on: [warehouse, staff]
 
   warehouse:
