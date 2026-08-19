@@ -17,7 +17,7 @@ export function securityHeaders(production: boolean) {
     "Permissions-Policy": "camera=(self), microphone=(), geolocation=()",
     ...(production ? {
       "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
-      "Content-Security-Policy": "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'"
+      "Content-Security-Policy": "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' https://telegram.org; connect-src 'self'"
     } : {})
   } as const;
 }
