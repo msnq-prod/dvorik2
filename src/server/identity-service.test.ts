@@ -268,10 +268,14 @@ function repositories(state: FakeState, fault?: FaultStage): IdentityCommandRepo
 const actorReferences = {
   super: Object.freeze({ session: "super" }),
   admin: Object.freeze({ session: "admin" }),
-  seller: Object.freeze({ session: "seller" })
+  seller: Object.freeze({ session: "seller" }),
+  telegram: Object.freeze({ service: "telegram-webhook" })
 };
 const actorResolver: CommandActorResolver = {
   resolve(reference, channel) {
+    if (channel === "telegram" && reference === actorReferences.telegram) {
+      return { kind: "system", service: "telegram-webhook", authenticatedBy: "telegram_webhook" };
+    }
     if (channel !== "web") throw new Error("bad channel");
     const userId = reference === actorReferences.super ? "u-super"
       : reference === actorReferences.admin ? "u-admin"
@@ -301,6 +305,34 @@ function metadata(key: string, actorReference: unknown = actorReferences.super):
 
 function code(result: unknown) {
   return (result as { body?: { code?: string } }).body?.code;
+}
+
+{
+  const { database, service } = fixture();
+  const result = service.registerTelegramApplicant({
+    actorReference: actorReferences.telegram,
+    requestId: "telegram:9001:register",
+    channel: "telegram",
+    idempotencyKey: "telegram:9001:register"
+  }, { telegramUserId: "9001", firstName: "New", lastName: "Applicant", username: "newapplicant" });
+  assert.equal(result.status, 201);
+  assert.equal(database.state.users.get("tg-9001")?.entity.status, "pending");
+  assert.equal([...database.state.outbox.values()].filter(({ entity }) => entity.type === "telegram_onboarding_request").length, 2);
+  assert.equal([...database.state.outbox.values()].filter(({ entity }) => entity.type === "telegram_onboarding_received").length, 1);
+}
+
+{
+  const { database, service } = fixture();
+  const pending = database.state.users.get("u-pending")!;
+  database.state.users.set("u-pending", { ...pending, entity: { ...pending.entity, telegramUserId: "9002" } });
+  const result = service.registerTelegramApplicant({
+    actorReference: actorReferences.telegram,
+    requestId: "telegram:9002:register",
+    channel: "telegram",
+    idempotencyKey: "telegram:9002:register"
+  }, { telegramUserId: "9002", firstName: "Pending", lastName: "Test", username: "u-pending" });
+  assert.equal(result.status, 200);
+  assert.equal([...database.state.outbox.values()].filter(({ entity }) => entity.type === "telegram_onboarding_request").length, 2);
 }
 
 {

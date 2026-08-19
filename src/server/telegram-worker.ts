@@ -98,7 +98,7 @@ async function sendTelegramMessage(
 ) {
   if (message.channel !== "telegram") throw new Error(`Unsupported outbox channel: ${message.channel}`);
   if (production && !assertDeferredWorkerType(message.type)) throw new Error(`FEATURE_DISABLED:${message.type}`);
-  const terminalIdentityTypes = new Set(["telegram_onboarding_reject", "identity_access_changed"]);
+  const terminalIdentityTypes = new Set(["telegram_onboarding_received", "telegram_onboarding_reject", "identity_access_changed"]);
   const user = identities?.findById(message.userId) ?? legacyUser;
   if (!user?.telegramUserId || (user.status !== "active" && !terminalIdentityTypes.has(message.type))) {
     throw new Error("Telegram recipient is not eligible");

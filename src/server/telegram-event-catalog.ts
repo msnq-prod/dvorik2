@@ -3,7 +3,7 @@ import { OutboxDeliveryError } from "./sqlite-outbox-dispatcher";
 
 export const telegramEventTypes = [
   "stock.threshold", "stock.zero", "swap.requested", "swap.accepted", "swap.declined",
-  "swap.cancelled", "swap.expired", "telegram_onboarding_request", "telegram_onboarding_approve",
+  "swap.cancelled", "swap.expired", "telegram_onboarding_request", "telegram_onboarding_received", "telegram_onboarding_approve",
   "telegram_onboarding_reject", "identity_access_changed", "exchange.requested", "exchange.accepted",
   "exchange.declined", "exchange.cancelled", "exchange.expired", "inventory.active",
   "saby.mapping_required", "saby.negative_stock"
@@ -39,6 +39,7 @@ export function renderTelegramEvent(message: OutboxMessage): OutboxMessage {
     "swap.cancelled": `Заявка на подмену ${shift} отменена.`,
     "swap.expired": `Срок заявки на подмену ${shift} истёк.`,
     "telegram_onboarding_request": "Новая заявка на доступ.",
+    "telegram_onboarding_received": "Заявка на доступ отправлена администратору.",
     "telegram_onboarding_approve": "Доступ одобрен.",
     "telegram_onboarding_reject": "Заявка на доступ отклонена.",
     "identity_access_changed": "Параметры доступа изменены. Выполните вход повторно."

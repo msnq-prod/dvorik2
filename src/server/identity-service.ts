@@ -213,8 +213,31 @@ export class IdentityService {
             requestId: context.requestId,
             createdAt: at
           }, { at, expectedRevision: null }), "onboarding request audit");
+          created(context.transaction.repositories.outbox.enqueue({
+            id: this.createId("outbox"),
+            channel: "telegram",
+            userId: saved.record.entity.id,
+            type: "telegram_onboarding_received",
+            payload: { schemaVersion: 1, value: {
+              schemaVersion: 1,
+              text: "Заявка на доступ отправлена администратору.",
+              correlationId: context.correlationId
+            } },
+            status: "pending",
+            attemptCount: 0,
+            maxAttempts: this.options.outboxMaxAttempts,
+            availableAt: at,
+            createdAt: at,
+            idempotencyKey: `identity:onboarding-received:${saved.record.entity.id}:${context.requestId}`
+          }, { at, expectedRevision: null }), "onboarding acknowledgement outbox");
+        }
+        // A previous delivery may have failed before a reviewer existed or
+        // before the worker was running. Repeating /start must restore any
+        // missing reviewer notification; the stable idempotency key prevents
+        // duplicate messages for reviewers already notified.
+        if (saved.record.entity.status === "pending") {
           for (const adminId of context.transaction.repositories.users.listActiveOnboardingReviewerIds()) {
-            created(context.transaction.repositories.outbox.enqueue({
+            const notification = context.transaction.repositories.outbox.enqueue({
               id: this.createId("outbox"),
               channel: "telegram",
               userId: adminId,
@@ -236,7 +259,10 @@ export class IdentityService {
               availableAt: at,
               createdAt: at,
               idempotencyKey: `identity:onboarding-request:${saved.record.entity.id}:${adminId}`
-            }, { at, expectedRevision: null }), "onboarding request outbox");
+            }, { at, expectedRevision: null });
+            if (notification.outcome !== "created" && notification.outcome !== "duplicate") {
+              throw new Error("onboarding request outbox could not be enqueued");
+            }
           }
         }
         return { status: saved.created ? 201 : 200, body: { user: userJson(saved.record.entity), created: saved.created } };
