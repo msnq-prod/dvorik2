@@ -133,10 +133,10 @@ export function handleTelegramUpdate(update: TelegramUpdate, hooks: TelegramIden
     if (!targetUserId || (action !== "approve" && action !== "reject")) {
       throw new DomainError("BAD_ONBOARD_ACTION", "Некорректное действие onboarding");
     }
-    if (action === "approve" && role !== "seller" && role !== "admin") {
+    if (action === "approve" && role !== undefined) {
       throw new DomainError("BAD_ONBOARD_ACTION", "Некорректное действие onboarding");
     }
-    const approvedRole = action === "approve" ? role as Role : undefined;
+    const approvedRole = action === "approve" ? "seller" as Role : undefined;
     const resolved = hooks.resolveOnboarding({
       updateId,
       actorTelegramUserId: String(from.id),
@@ -176,7 +176,7 @@ export function handleTelegramUpdate(update: TelegramUpdate, hooks: TelegramIden
             userId: user.id,
             reply_markup: {
               inline_keyboard: [[
-                { text: "Одобрить продавца", callback_data: `onboard:approve:${user.id}:seller` },
+                { text: "Принять", callback_data: `onboard:approve:${user.id}` },
                 { text: "Отклонить", callback_data: `onboard:reject:${user.id}` }
               ]]
             }
@@ -223,12 +223,12 @@ export function handleTelegramUpdate(update: TelegramUpdate, hooks: TelegramIden
         ? undefined
         : state.users.find((item) => item.id === pendingUserId && item.status === "pending");
       if (!hooks.resolveOnboarding && !pending) throw new DomainError("PENDING_USER_NOT_FOUND", "Заявка уже обработана", 404);
-      if (action === "approve" && (role === "seller" || role === "admin")) {
-        hooks.resolveOnboarding?.({ updateId, actorTelegramUserId: String(from.id), actorUserId: user.id, targetUserId: pendingUserId, action, role });
+      if (action === "approve" && role === undefined) {
+        hooks.resolveOnboarding?.({ updateId, actorTelegramUserId: String(from.id), actorUserId: user.id, targetUserId: pendingUserId, action, role: "seller" });
         if (pending) {
           pending.status = "active";
-          pending.role = role;
-          pending.permissions = rolePermissions[role];
+          pending.role = "seller";
+          pending.permissions = rolePermissions.seller;
           enqueue(state, pending.id, "telegram_message", { text: "Доступ одобрен." }, `tg-approved:${pending.id}`);
         }
         message = "Заявка одобрена.";
@@ -240,7 +240,7 @@ export function handleTelegramUpdate(update: TelegramUpdate, hooks: TelegramIden
         }
         message = "Заявка отклонена.";
       } else throw new DomainError("BAD_ONBOARD_ACTION", "Некорректное действие onboarding");
-      if (pending) appendAudit(state, user.id, "telegram_onboarding", pending.id, action, { role });
+      if (pending) appendAudit(state, user.id, "telegram_onboarding", pending.id, action, { role: action === "approve" ? "seller" : undefined });
     } else if (text === "Наличие") {
       message = "Откройте WebApp для детального наличия по точкам.";
     } else if (text === "Поиск товара") {

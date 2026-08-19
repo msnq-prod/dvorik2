@@ -128,7 +128,7 @@ export function UsersPage({ client, session }: PageProps) {
         <Metric title="Заблокированы" value={users.filter((user) => user.status === "blocked").length} tone="warn" />
       </div>
 
-      {users.some((user) => user.status === "pending") && <Panel title={`Ожидают подтверждения · ${users.filter((user) => user.status === "pending").length}`} className="attention-panel"><div className="pending-users">{users.filter((user) => user.status === "pending").map((user) => <button className="pending-user" key={user.id} onClick={() => openUser(user)}><strong>{user.firstName} {user.lastName}</strong><span>@{user.username || "без username"}</span><StatusBadge tone="warn">Требует решения</StatusBadge></button>)}</div></Panel>}
+      {users.some((user) => user.status === "pending") && <Notice tone="warn">Заявки на доступ обрабатываются в Telegram-боте.</Notice>}
 
       <Panel title="Сотрудники" className="primary-panel">
         <Toolbar>
@@ -205,9 +205,8 @@ function UserActions({ user, working, disabled, canRoles, onStatus, onRole }: { 
   if (disabled) return <>—</>;
   return (
     <ActionMenu label={`Опасные действия с ${user.firstName}`}>
-      {user.status !== "active" && <button className="secondary small" disabled={working} onClick={() => onStatus("active")}>Активировать</button>}
+      {user.status !== "active" && user.status !== "pending" && <button className="secondary small" disabled={working} onClick={() => onStatus("active")}>Активировать</button>}
       {user.status === "active" && <button className="danger small" disabled={working} onClick={() => onStatus("blocked")}>Заблокировать</button>}
-      {user.status === "pending" && <button className="danger-secondary small" disabled={working} onClick={() => onStatus("rejected")}>Отклонить</button>}
       {user.status !== "archived" && user.status !== "active" && <button className="danger-secondary small" disabled={working} onClick={() => onStatus("archived")}>В архив</button>}
       {canRoles && user.role !== "seller" && <button className="secondary small" disabled={working} onClick={() => onRole("seller")}>Сделать продавцом</button>}
       {canRoles && user.role !== "admin" && <button className="secondary small" disabled={working} onClick={() => onRole("admin")}>Сделать админом</button>}

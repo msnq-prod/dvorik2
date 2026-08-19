@@ -247,8 +247,7 @@ export class IdentityService {
                 text: `Новая заявка: ${`${saved.record.entity.firstName} ${saved.record.entity.lastName}`.trim() || saved.record.entity.id}`,
                 userId: saved.record.entity.id,
                 reply_markup: { inline_keyboard: [[
-                  { text: "Одобрить продавца", callback_data: `onboard:approve:${saved.record.entity.id}:seller` },
-                  { text: "Одобрить администратора", callback_data: `onboard:approve:${saved.record.entity.id}:admin` },
+                  { text: "Принять", callback_data: `onboard:approve:${saved.record.entity.id}` },
                   { text: "Отклонить", callback_data: `onboard:reject:${saved.record.entity.id}` }
                 ]] },
                 correlationId: context.correlationId
@@ -286,6 +285,9 @@ export class IdentityService {
     if (!current) return response(404, "USER_NOT_FOUND", "Пользователь не найден");
     const beforeStatus = current.entity.status;
     const beforeRole = current.entity.role;
+    if (action === "update" && current.entity.status === "pending" && (input.status !== undefined || input.role !== undefined)) {
+      return response(409, "ONBOARDING_VIA_TELEGRAM", "Заявки на доступ обрабатываются в Telegram.");
+    }
     const nextStatus = input.status ?? current.entity.status;
     const nextRole = input.role ?? current.entity.role;
     const statusChanged = nextStatus !== current.entity.status;

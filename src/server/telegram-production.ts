@@ -30,12 +30,12 @@ export function handleProductionTelegramUpdate(update: TelegramUpdate, hooks: Pr
   if (!targetUserId || (action !== "approve" && action !== "reject")) {
     throw new DomainError("BAD_ONBOARD_ACTION", "Некорректное действие onboarding");
   }
-  if (action === "approve" && role !== "seller" && role !== "admin") {
+  if (action === "approve" && role !== undefined) {
     throw new DomainError("BAD_ONBOARD_ACTION", "Некорректное действие onboarding");
   }
   const resolved = hooks.resolveOnboarding({
     updateId, actorTelegramUserId: String(from.id), actorUserId: user.id, targetUserId, action,
-    ...(action === "approve" ? { role: role as Role } : {})
+    ...(action === "approve" ? { role: "seller" as Role } : {})
   });
   return { userId: resolved.id, status: resolved.status };
 }

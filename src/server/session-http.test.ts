@@ -494,7 +494,7 @@ try {
 
   const approval = {
     update_id: 991002,
-    callback_query: { data: `onboard:approve:${applicantId}:seller`, from: { id: 1001, first_name: "Super", username: "super" } }
+    callback_query: { data: `onboard:approve:${applicantId}`, from: { id: 1001, first_name: "Super", username: "super" } }
   };
   const approvalResponse = await webhook(second, approval);
   assert.equal(approvalResponse.status, 200);

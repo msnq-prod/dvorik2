@@ -81,7 +81,7 @@ const {
   previewProductMerge, reverseOperation, setScheduleDay, undoCsvImport, undoProductMerge, updateShift, refreshScheduleState
 } = legacyDomain;
 const { queueReportTelegram, renderReportPdf, reportRows } = legacyRuntime?.reports ?? unavailableReports;
-const { approveTelegramOnboarding, handleTelegramUpdate, setNotificationPreference } = legacyRuntime?.telegram ?? unavailableTelegram;
+const { handleTelegramUpdate, setNotificationPreference } = legacyRuntime?.telegram ?? unavailableTelegram;
 const app = express();
 const httpMetrics = createHttpMetrics();
 const mutationRateLimiter = createFixedWindowRateLimiter({ limit: 120, windowMs: 60_000 });
@@ -543,7 +543,6 @@ const openApiContract = {
     "/api/saby/status": { get: { summary: "Saby sync status" } },
     "/api/cash/status": { get: { summary: "Optional cash service availability" } },
     "/api/saby/mappings": { get: { summary: "List Saby nomenclature mappings" }, put: { summary: "Map Saby nomenclature UUID to a Dvorik product" } },
-    "/api/telegram/onboarding/{id}/approve": { post: { summary: "Approve pending Telegram user" } },
     "/api/notification-preferences": { get: { summary: "List notification preferences" }, put: { summary: "Set notification preference" } },
     "/api/auth/logout": { post: { summary: "Revoke current session" } },
     "/api/session": { get: { summary: "Current session" } },
@@ -804,18 +803,6 @@ app.get("/api/cash/status", asyncRoute(async (req, res) => {
   const user = actor(req);
   requirePermission(user, "saby:manage");
   res.json(cashClient ? await cashClient.status() : { availability: "disabled", enabled: false });
-}));
-
-app.post("/api/telegram/onboarding/:id/approve", asyncRoute((req, res) => {
-  const user = actor(req);
-  if (identityService) {
-    identityResponse(res, identityService.onboard(identityMetadata(req, user), req.params.id, "approve", req.body.role));
-    return;
-  }
-  const approved = approveTelegramOnboarding(user, req.params.id, req.body.role, () => {
-    sessionService?.revokeUser(req.params.id, user.id, "onboarding_approval");
-  });
-  res.json(approved);
 }));
 
 app.get("/api/notification-preferences", asyncRoute((req, res) => {
