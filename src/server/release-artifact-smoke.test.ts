@@ -38,6 +38,8 @@ assert.equal(fs.existsSync(path.resolve("dist/index.js")), true, "Build artifact
 assert.equal(fs.existsSync(path.resolve("dist/backup-job.js")), true, "Backup job artifact is missing");
 assert.equal(fs.existsSync(path.resolve("dist/warehouse-company-worker.js")), true, "Company worker artifact is missing");
 assert.equal(fs.existsSync(path.resolve("dist/staff-identity-worker.js")), true, "Staff identity worker artifact is missing");
+assert.equal(fs.existsSync(path.resolve("dist/telegram-worker.js")), true, "Telegram worker artifact is missing");
+assert.equal(fs.existsSync(path.resolve("dist/configure-telegram.js")), true, "Telegram configuration artifact is missing");
 assert.equal(fs.existsSync(path.resolve("dist/cash/index.js")), true, "Cash service artifact is missing");
 assert.equal(fs.existsSync(path.resolve("dist/cash/backup-job.js")), true, "Cash backup job artifact is missing");
 assert.equal(fs.existsSync(path.resolve("dist/staff/index.js")), true, "Staff service artifact is missing");

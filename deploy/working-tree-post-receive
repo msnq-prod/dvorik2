@@ -1,0 +1,17 @@
+#!/usr/bin/env sh
+set -eu
+
+bare_repo="/home/lame/dvorik2/gpt-version.git"
+updates_file="$(mktemp /tmp/gpt-version-updates.XXXXXX)"
+trap 'rm -f "$updates_file"' EXIT
+
+cat >"$updates_file"
+while read -r oldrev newrev refname; do
+  case "$refname" in
+    refs/heads/main)
+      git --git-dir="$bare_repo" update-ref "$refname" "$newrev" "$oldrev"
+      ;;
+  esac
+done <"$updates_file"
+
+"$bare_repo/hooks/post-receive" <"$updates_file"

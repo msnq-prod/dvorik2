@@ -113,16 +113,21 @@ function timezone(value: string) {
 
 function productionConfig(env: Env): RuntimeConfig {
   if (env.DVORIK_STATE_FILE?.trim()) throw new Error("DVORIK_STATE_FILE is forbidden in production");
+  const localMediaOnly = env.DVORIK_LOCAL_MEDIA_ONLY === "1";
   const configuredTimezone = timezone(required(env, "DVORIK_TIMEZONE"));
   const release = required(env, "DVORIK_RELEASE_VERSION");
   if (/^(dev|test|local|unknown)$/i.test(release)) throw new Error("DVORIK_RELEASE_VERSION must not be a development value");
   const token = required(env, "TELEGRAM_BOT_TOKEN");
   const webhookSecret = required(env, "TELEGRAM_WEBHOOK_SECRET");
   if (devTokens.has(token) || devTokens.has(webhookSecret)) throw new Error("Development Telegram secrets are forbidden in production");
-  const endpoint = required(env, "DVORIK_OBJECT_STORAGE_ENDPOINT");
-  const publicBaseUrl = required(env, "DVORIK_OBJECT_STORAGE_PUBLIC_URL");
-  for (const [name, value] of [["DVORIK_OBJECT_STORAGE_ENDPOINT", endpoint], ["DVORIK_OBJECT_STORAGE_PUBLIC_URL", publicBaseUrl]] as const) {
-    try { if (new URL(value).protocol !== "https:") throw new Error(); } catch { throw new Error(`${name} must be an HTTPS URL`); }
+  const endpoint = env.DVORIK_OBJECT_STORAGE_ENDPOINT?.trim();
+  const publicBaseUrl = env.DVORIK_OBJECT_STORAGE_PUBLIC_URL?.trim();
+  if (!localMediaOnly) {
+    const requiredEndpoint = required(env, "DVORIK_OBJECT_STORAGE_ENDPOINT");
+    const requiredPublicBaseUrl = required(env, "DVORIK_OBJECT_STORAGE_PUBLIC_URL");
+    for (const [name, value] of [["DVORIK_OBJECT_STORAGE_ENDPOINT", requiredEndpoint], ["DVORIK_OBJECT_STORAGE_PUBLIC_URL", requiredPublicBaseUrl]] as const) {
+      try { if (new URL(value).protocol !== "https:") throw new Error(); } catch { throw new Error(`${name} must be an HTTPS URL`); }
+    }
   }
   const cookieSameSite = required(env, "DVORIK_COOKIE_SAME_SITE").toLowerCase();
   if (cookieSameSite !== "lax") throw new Error("DVORIK_COOKIE_SAME_SITE must be lax");
@@ -147,10 +152,10 @@ function productionConfig(env: Env): RuntimeConfig {
     cash: cashConfig(env),
     staff,
     warehouse,
-    objectStorage: {
-      endpoint,
+    objectStorage: localMediaOnly ? undefined : {
+      endpoint: endpoint!,
       bucket: required(env, "DVORIK_OBJECT_STORAGE_BUCKET"),
-      publicBaseUrl,
+      publicBaseUrl: publicBaseUrl!,
       token: required(env, "DVORIK_OBJECT_STORAGE_TOKEN")
     },
     sessionCookie: { name: "__Host-dvorik_session", secret: sessionSecret, secure: true, sameSite: cookieSameSite, maxAgeMs: 8 * 60 * 60 * 1000 }

@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+bare_repo="/home/lame/dvorik2/gpt-version.git"
+work_tree="/home/lame/dvorik2/gpt-version"
+log_file="/home/lame/dvorik2/gpt-version-deploy.log"
+lock_file="/home/lame/dvorik2/gpt-version-deploy.lock"
+
+while read -r _oldrev newrev refname; do
+  [[ "$refname" == "refs/heads/main" ]] || continue
+
+  (
+    exec >>"$log_file" 2>&1
+    exec </dev/null
+
+    flock -n 9 || {
+      echo "Deployment is already running" >&2
+      exit 1
+    }
+
+    ci_dir="$(mktemp -d /home/lame/dvorik2/.gpt-version-ci.XXXXXX)"
+    ci_image="gpt-version-ci:${newrev}"
+    cleanup() {
+      docker image rm "$ci_image" >/dev/null 2>&1 || true
+      rm -rf "$ci_dir"
+    }
+    trap cleanup EXIT
+
+    git --git-dir="$bare_repo" archive "$newrev" | tar -x -C "$ci_dir"
+    echo "Running CI for $newrev"
+    docker build --target build --tag "$ci_image" "$ci_dir"
+    docker run --rm --entrypoint sh "$ci_image" -lc 'npm ci --include=dev --no-audit --no-fund && npm run check && npm test'
+
+    echo "Deploying $newrev"
+    git --work-tree="$work_tree" --git-dir="$bare_repo" checkout -f "$newrev"
+    /home/lame/dvorik2/gpt-version-deploy.sh
+    echo "Deployment completed: $newrev"
+  ) 9>"$lock_file" &
+
+  echo "Deployment queued: $newrev (log: $log_file)"
+done
